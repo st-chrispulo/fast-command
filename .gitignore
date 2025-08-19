@@ -3,4 +3,4 @@ __pycache__
 .idea
 *.tmp.*
 logs
-*env*
+*.env*
