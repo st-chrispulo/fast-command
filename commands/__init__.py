@@ -10,3 +10,5 @@ from .add_role import AddRoleCommand
 from .assign_role import AssignRoleToUserCommand
 from .get_command_names import GetCommandNamesCommand
 from .synch_permission import SyncPermissionCommand
+
+
