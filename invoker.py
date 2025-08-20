@@ -1,6 +1,6 @@
 from commands import SayHelloCommand, LoginCommand, CreateUserCommand, LogoutCommand, \
     RefreshTokenCommand, MeCommand, UploadUserAvatarCommand, GenerateSecureDownloadLinkCommand, AddRoleCommand, \
-    AssignRoleToUserCommand, GetCommandNamesCommand, SyncPermissionCommand
+    AssignRoleToUserCommand, GetCommandNamesCommand, SyncPermissionCommand, TransformTemplateRenderCommand
 
 command_registry = [
     CreateUserCommand(),
@@ -14,7 +14,8 @@ command_registry = [
     AddRoleCommand(),
     AssignRoleToUserCommand(),
     GetCommandNamesCommand(),
-    SyncPermissionCommand()
+    SyncPermissionCommand(),
+    TransformTemplateRenderCommand()
 ]
 
 
