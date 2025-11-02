@@ -13,3 +13,4 @@ croniter~=6.0.0
 PyJWT~=2.10.1
 passlib~=1.7.4
 python-multipart==0.0.7
+openai==1.47.0

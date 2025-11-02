@@ -39,11 +39,11 @@ class LoginCommand(BaseCommand):
         db = SessionLocal()
         try:
             user = db.execute(
-                text("SELECT id, password_hash FROM tbl_users WHERE email = :email"),
+                text("SELECT id, password FROM tbl_users WHERE email = :email"),
                 {"email": payload.email}
             ).fetchone()
 
-            if not user or not bcrypt.verify(payload.password, user.password_hash):
+            if not user or not bcrypt.verify(payload.password, user.password):
                 raise HTTPException(status_code=401, detail="Invalid credentials")
 
             user_id = user.id

@@ -65,13 +65,13 @@ class CreateUserCommand(BaseCommand):
 
             db.execute(
                 text("""
-                    INSERT INTO tbl_users (email, username, password_hash)
-                    VALUES (:email, :username, :password_hash)
+                    INSERT INTO tbl_users (email, username, password)
+                    VALUES (:email, :username, :password)
                 """),
                 {
                     "email": payload.email,
                     "username": payload.username,
-                    "password_hash": hashed_pw
+                    "password": hashed_pw
                 }
             )
             db.commit()
