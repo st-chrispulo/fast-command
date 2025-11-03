@@ -6,9 +6,9 @@ WITH upserted_user AS (
         password
     )
     VALUES (
-        'superadmin',
-        'admin@example.com',
-        'CHANGE_ME_HASHED_PASSWORD'
+        'ngc.jieun@gmail.com',
+        'ngc.jieun@gmail.com',
+        '$bcrypt-sha256$v=2,t=2b,r=12$m0yAiYMOrAAgOcw7hnNEde$G/AGUmgl7EdUpU1sVufwUDMFcjpy8xW'
     )
     ON CONFLICT (email)
     DO UPDATE
