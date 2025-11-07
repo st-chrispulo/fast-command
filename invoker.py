@@ -1,7 +1,7 @@
 from commands import SayHelloCommand, LoginCommand, CreateUserCommand, LogoutCommand, \
     RefreshTokenCommand, MeCommand, UploadUserAvatarCommand, GenerateSecureDownloadLinkCommand, AddRoleCommand, \
     AssignRoleToUserCommand, GetCommandNamesCommand, SyncPermissionCommand, TransformTemplateRenderCommand, \
-    RegisterGithubUserCommand, GithubSignInCommand
+    RegisterGithubUserCommand, GithubSignInCommand, GithubStartCommand
 
 command_registry = [
     CreateUserCommand(),
@@ -18,7 +18,8 @@ command_registry = [
     SyncPermissionCommand(),
     TransformTemplateRenderCommand(),
     RegisterGithubUserCommand(),
-    GithubSignInCommand()
+    GithubSignInCommand(),
+    GithubStartCommand()
 ]
 
 
