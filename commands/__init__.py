@@ -11,3 +11,6 @@ from .assign_role import AssignRoleToUserCommand
 from .get_command_names import GetCommandNamesCommand
 from .synch_permission import SyncPermissionCommand
 from .studio.transform_template import TransformTemplateRenderCommand
+from .github.register import RegisterGithubUserCommand
+from .github.signin import GithubSignInCommand
+from .github.start import GithubStartCommand

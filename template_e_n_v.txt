@@ -1,0 +1,82 @@
+###############################################################################
+# ===========================
+#   APP & SECURITY SETTINGS
+# ===========================
+###############################################################################
+
+# Short name for your app.
+# This will be used to create:
+#   efdn_db   (database name)
+#   efdn_user (database user)
+APP_NAME=efdn
+
+# Secret key for signing / hashing / auth tokens.
+# In production: replace with a long random string.
+SECRET_KEY=super_secret_local_dev_key_change_me
+
+###############################################################################
+# ===========================
+#   BOOTSTRAP (INIT) DATABASE CREDENTIALS
+# ===========================
+###############################################################################
+# These are the "admin" / high-privilege credentials used ONLY to:
+#   - create efdn_db
+#   - create efdn_user (with a strong random password)
+#   - grant privileges
+#
+# For local dev, this is often just the default postgres superuser.
+# In production/staging, this should be a superuser or migration user, NEVER exposed.
+
+PG_INIT_DB_NAME=postgres
+PG_INIT_DB_USER=postgres
+PG_INIT_DB_PASSWORD=cldrYfER5dLYA0OHgici
+PG_INIT_DB_HOST=localhost
+PG_INIT_DB_PORT=5432
+
+
+###############################################################################
+# ===========================
+#   OPENAI CONFIG
+# ===========================
+###############################################################################
+# For features that call OpenAI.
+# Replace with a real key in production.
+OPENAI_API_KEY=sk-openai-local-dev-placeholder
+
+
+###############################################################################
+# ===========================
+#   PAYPAL CONFIGURATION
+# ===========================
+###############################################################################
+# PAYPAL_MODE:
+#   sandbox = test mode
+#   live    = production
+PAYPAL_MODE=sandbox
+
+# These are example sandbox creds. Replace with your real sandbox app creds.
+PAYPAL_CLIENT_ID=your-paypal-sandbox-client-id-here
+PAYPAL_SECRET=your-paypal-sandbox-secret-here
+
+# Public base URL of your app (used for return/cancel URLs, branding, etc.).
+# For local dev you can leave this as http://localhost:8000 or your tunnel URL.
+BASE_URL=http://localhost:8000
+
+# What the buyer sees during checkout.
+BRAND_NAME="EFDN Dev"
+
+
+###############################################################################
+# ===========================
+#   GITHUB OAUTH CONFIGURATION
+# ===========================
+###############################################################################
+# These are used when authenticating with GitHub OAuth.
+# You get these from GitHub Developer Settings -> OAuth Apps.
+
+GITHUB_CLIENT_ID=github_client_id_here
+GITHUB_CLIENT_SECRET=github_client_secret_here
+
+# This must match exactly what you registered as the "Authorization callback URL".
+# In dev, often something like http://localhost:8000/auth/github/callback
+GITHUB_REDIRECT_URI=http://localhost:8000/auth/github/callback

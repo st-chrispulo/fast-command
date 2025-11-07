@@ -83,24 +83,59 @@ for command in command_registry:
 
 
     def generate_endpoint(cmd):
+        """
+        Build the FastAPI endpoint for a command.
+
+        - For file_upload commands: use the existing builder.
+        - For GET + schema: parse the model from QUERY PARAMS via Depends().
+          (Avoids GET-with-body and the 'loc=["body"]' 422.)
+        - For non-GET + schema: accept the model as request body (default FastAPI).
+        - For auth: inject user_id via Depends(get_user_id) as before.
+        """
         if cmd.type == "file_upload":
             return build_file_upload_endpoint(cmd)
+
+        has_schema = cmd.schema is not None
+        method = cmd.method.upper()
+        is_get = method == "GET"
+
         if cmd.require_auth:
-            if cmd.schema is None:
+            if not has_schema:
                 async def endpoint(user_id: str = Depends(get_user_id)):
-                    return cmd.execute({"user_id": user_id})
+                    # No payload; pass user_id only
+                    return await maybe_await(cmd.execute, {"user_id": user_id})
             else:
-                async def endpoint(payload: cmd.schema, user_id: str = Depends(get_user_id)):
-                    if hasattr(payload, "user_id"):
-                        setattr(payload, "user_id", user_id)
-                    return await maybe_await(cmd.execute, payload, user_id=user_id)
+                if is_get:
+                    # READ SCHEMA FROM QUERY PARAMS
+                    async def endpoint(
+                            payload: cmd.schema = Depends(),  # <--- key change
+                            user_id: str = Depends(get_user_id),
+                    ):
+                        if hasattr(payload, "user_id"):
+                            setattr(payload, "user_id", user_id)
+                        return await maybe_await(cmd.execute, payload, user_id=user_id)
+                else:
+                    # READ SCHEMA FROM REQUEST BODY (POST/PUT/etc)
+                    async def endpoint(
+                            payload: cmd.schema,
+                            user_id: str = Depends(get_user_id),
+                    ):
+                        if hasattr(payload, "user_id"):
+                            setattr(payload, "user_id", user_id)
+                        return await maybe_await(cmd.execute, payload, user_id=user_id)
         else:
-            if cmd.schema is None:
+            if not has_schema:
                 async def endpoint():
-                    return cmd.execute(None)
+                    return await maybe_await(cmd.execute, None)
             else:
-                async def endpoint(payload: cmd.schema):
-                    return cmd.execute(payload)
+                if is_get:
+                    # READ SCHEMA FROM QUERY PARAMS
+                    async def endpoint(payload: cmd.schema = Depends()):  # <--- key change
+                        return await maybe_await(cmd.execute, payload)
+                else:
+                    # READ SCHEMA FROM REQUEST BODY
+                    async def endpoint(payload: cmd.schema):
+                        return await maybe_await(cmd.execute, payload)
 
         return endpoint
 
