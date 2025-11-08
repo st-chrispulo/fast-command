@@ -14,3 +14,6 @@ from .studio.transform_template import TransformTemplateRenderCommand
 from .github.register import RegisterGithubUserCommand
 from .github.signin import GithubSignInCommand
 from .github.start import GithubStartCommand
+from .components.contents.create import CreateCompContentsWithUploadsCommand
+from .components.contents.update import UpdateComponentWithUploadsCommand
+from .components.contents.delete import DeleteCompContentCommand
