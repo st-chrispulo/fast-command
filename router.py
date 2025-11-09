@@ -8,7 +8,8 @@ from sockets.socket_registry import socket_registry
 from sockets.room_state import get_sockets_in_room
 from fastapi.responses import JSONResponse
 from inspect import signature, Parameter
-from typing import get_type_hints, List
+from typing import get_type_hints, List, get_origin, get_args
+
 import inspect
 from utils.refresh_available_commands import sync_command_registry_to_db
 
@@ -240,6 +241,8 @@ for command in command_registry:
         return endpoint
 
 
+    group_name = getattr(command, "group", None) or "Default"
+
     route_kwargs = {
         "path": f"/{endpoint_name}",
         "endpoint": generate_endpoint(command),
@@ -247,8 +250,11 @@ for command in command_registry:
         "name": endpoint_name,
         "summary": f"{endpoint_name} Command",
         "response_model": dict,
+        # put the command group into tags so Swagger groups endpoints
+        "tags": [group_name],
     }
 
+    # If route is open (no require_auth) keep your current openapi_extra behavior
     if not command.require_auth:
         route_kwargs["openapi_extra"] = {"security": []}
 

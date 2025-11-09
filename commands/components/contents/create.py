@@ -67,8 +67,6 @@ class CreateCompContentsPayload(BaseModel):
     name: str
     description: Optional[str] = None
     template_id: Optional[UUID] = None
-    created_by: Optional[int] = None
-    updated_by: Optional[int] = None
 
     @field_validator("name")
     @classmethod
@@ -108,6 +106,7 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
     require_auth = True
     method = "post"
     type = "file_upload"
+    group = "Content"
 
     # Explicitly declare file fields so the dynamic router can expose them deterministically.
     # Each tuple: (field_name, is_multiple)
@@ -144,10 +143,10 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
         dest_prefix = f"{self.base_folder}/{content_id}"
         logger.debug("[create_with_uploads] content_id=%s dest_prefix=%s", content_id, dest_prefix)
 
-        # Results to be stored in DB
-        thumbnail_url: Optional[str] = None
-        images_urls: Optional[List[str]] = None
-        attachment_url: Optional[str] = None
+        # Results to be stored in DB (GCS object KEYS, not URLs)
+        thumbnail_key: Optional[str] = None
+        images_keys: Optional[List[str]] = None
+        attachment_key: Optional[str] = None
 
         # Helper: read and basic validate (keeps original .file pointer)
         async def _read_and_check(f: UploadFile, max_mb: int, allowed: Optional[set]):
@@ -192,20 +191,8 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
                 # Note: above handles different call styles if your helper signature varies
                 logger.info("[create_with_uploads] thumbnail uploaded elapsed=%.3fs ok=%s", time.monotonic() - t0, res.get("ok"))
                 # build usable url: prefer public_url, then signed url, then canonical https url
-                if res.get("public_url"):
-                    thumbnail_url = res.get("public_url")
-                else:
-                    # construct canonical url (may be 403 if object is private)
-                    canonical = f"https://storage.googleapis.com/{res['bucket']}/{res['key']}"
-                    try:
-                        # prefer a signed url for private objects
-                        signed = gcs.signed_get_url(res["key"], expires_seconds=3600)
-                        thumbnail_url = signed
-                        logger.debug("[create_with_uploads] thumbnail signed_url generated")
-                    except Exception:
-                        # fallback to canonical URL
-                        thumbnail_url = canonical
-                        logger.debug("[create_with_uploads] thumbnail canonical_url used (no signed url)")
+                # Save key to DB
+                thumbnail_key = res["key"]
 
             except Exception as e:
                 logger.exception("[create_with_uploads] thumbnail upload failed: %s", e)
@@ -233,20 +220,10 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
                     elapsed = time.monotonic() - t0
                     logger.info("[create_with_uploads] image idx=%d uploaded elapsed=%.3fs ok=%s", idx, elapsed, res.get("ok"))
                     # determine best url for this image
-                    if res.get("public_url"):
-                        img_url = res.get("public_url")
-                    else:
-                        canonical = f"https://storage.googleapis.com/{res['bucket']}/{res['key']}"
-                        try:
-                            img_url = gcs.signed_get_url(res["key"], expires_seconds=3600)
-                            logger.debug("[create_with_uploads] image idx=%d signed_url generated", idx)
-                        except Exception:
-                            img_url = canonical
-                            logger.debug("[create_with_uploads] image idx=%d canonical_url used", idx)
-                    # append what's usable
-                    if img_url:
-                        images_urls.append(img_url)
-
+                    # Save key to DB
+                    if images_keys is None:
+                        images_keys = []
+                    images_keys.append(res["key"])
 
                 except Exception as e:
                     logger.exception("[create_with_uploads] image idx=%d upload failed: %s", idx, e)
@@ -270,16 +247,9 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
                     att_ct,
                 ) if hasattr(gcs, "upload_fileobj") else await asyncio.to_thread(gcs.upload_fileobj, fileobj=attachment.file, filename=att_name, dest_prefix=key_prefix, public=False, content_type=att_ct)
                 logger.info("[create_with_uploads] attachment uploaded elapsed=%.3fs ok=%s", time.monotonic() - t0, res.get("ok"))
-                if res.get("public_url"):
-                    attachment_url = res.get("public_url")
-                else:
-                    canonical = f"https://storage.googleapis.com/{res['bucket']}/{res['key']}"
-                    try:
-                        attachment_url = gcs.signed_get_url(res["key"], expires_seconds=3600)
-                        logger.debug("[create_with_uploads] attachment signed_url generated")
-                    except Exception:
-                        attachment_url = canonical
-                        logger.debug("[create_with_uploads] attachment canonical_url used")
+                # Save key to DB
+                attachment_key = res["key"]
+
 
             except Exception as e:
                 logger.exception("[create_with_uploads] attachment upload failed: %s", e)
@@ -290,8 +260,8 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
         try:
             # Prefer caller auth context when payload doesn't override created_by / updated_by
             current_uid = getattr(self, "user_id", None) or getattr(self, "actor_id", None)
-            created_by = payload.created_by if payload.created_by is not None else current_uid
-            updated_by = payload.updated_by if payload.updated_by is not None else current_uid
+            created_by = user_id
+            updated_by = user_id
 
             if self.require_auth and created_by is None:
                 logger.warning("[create_with_uploads] unauthorized call - no user context")
@@ -300,10 +270,10 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
             row = CompContent(
                 name=payload.name,
                 description=payload.description,
-                thumbnail=thumbnail_url,
-                images=images_urls,
+                thumbnail=thumbnail_key,  # store key
+                images=images_keys,  # store keys list
                 template_id=payload.template_id,
-                file_link=attachment_url,
+                file_link=attachment_key,  # store key
                 created_by=created_by,
                 updated_by=updated_by,
             )
@@ -318,16 +288,40 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
             elapsed_total = time.monotonic() - start_t
             logger.info("[create_with_uploads] finished total_elapsed=%.3fs content_id=%s", elapsed_total, content_id)
 
+            signed_thumb = None
+            signed_imgs = []
+            signed_attach = None
+            try:
+                if thumbnail_key:
+                    signed_thumb = gcs.signed_get_url(thumbnail_key, expires_seconds=3600)
+            except Exception:
+                pass
+            try:
+                for k in images_keys or []:
+                    try:
+                        signed_imgs.append(gcs.signed_get_url(k, expires_seconds=3600))
+                    except Exception:
+                        # fall back to canonical if you like
+                        signed_imgs.append(f"https://storage.googleapis.com/{gcs.bucket_name}/{k}")
+            except Exception:
+                pass
+            try:
+                if attachment_key:
+                    signed_attach = gcs.signed_get_url(attachment_key, expires_seconds=3600)
+            except Exception:
+                pass
+
             return {
                 "status": "ok",
-                "data": _comp_contents_to_dict(row),
+                "data": _comp_contents_to_dict(row),  # will include KEYS
                 "gcs": {
-                    "thumbnail": thumbnail_url,
-                    "images": images_urls or [],
-                    "attachment": attachment_url,
+                    "thumbnail": signed_thumb,
+                    "images": signed_imgs,
+                    "attachment": signed_attach,
                     "content_id": content_id,
                 },
             }
+
         except Exception:
             logger.exception("[create_with_uploads] DB error - rolling back")
             db.rollback()

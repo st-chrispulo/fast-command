@@ -65,7 +65,6 @@ class UpdateCompContentsPayload(BaseModel):
     # Editable scalar fields (omit to leave unchanged)
     name: Optional[str] = None
     description: Optional[str] = None
-    updated_by: Optional[int] = None
 
     # Images behavior (for file uploads only)
     images_mode: Literal["append", "replace"] = Field(default="append")
@@ -111,6 +110,7 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
     require_auth = True
     method = "put"
     type = "file_upload"
+    group = "Content"
 
     # IMPORTANT: these names must match the multipart fields, not the JSON body
     file_fields = [
@@ -262,11 +262,7 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
                 url = await _upload_return_url(file_link.file, att_name, f"{dest_prefix}/files", att_ct)
                 row.file_link = url
 
-            # -------- updated_by --------
-            if payload.updated_by is not None:
-                row.updated_by = payload.updated_by
-            elif current_uid is not None:
-                row.updated_by = current_uid
+            row.updated_by = user_id
 
             # -------- persist --------
             t0 = time.monotonic()

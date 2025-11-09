@@ -46,6 +46,7 @@ class DeleteCompContentCommand(BaseCommand):
     require_auth = True
     method = "delete"     # keep consistent with your other commands; change to "delete" if your router supports it
     type = "json"       # no files
+    group = "Content"
 
     async def execute(self, payload: DeleteCompContentPayload, user_id: Optional[str] = None):
         start_t = time.monotonic()

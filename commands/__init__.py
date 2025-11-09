@@ -17,3 +17,4 @@ from .github.start import GithubStartCommand
 from .components.contents.create import CreateCompContentsWithUploadsCommand
 from .components.contents.update import UpdateComponentWithUploadsCommand
 from .components.contents.delete import DeleteCompContentCommand
+from .components.contents.get import ContentGetCommand
