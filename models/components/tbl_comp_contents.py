@@ -3,7 +3,7 @@ from sqlalchemy import (
     Column, String, Text, DateTime, Integer, ForeignKey, Index, func, Table
 )
 from sqlalchemy.orm import declarative_base
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY  # <-- added ARRAY
 
 # If you already have a central Base, import it instead of creating a new one:
 # from models.base import Base
@@ -33,6 +33,9 @@ class CompContent(Base):
     template_id = Column(UUID(as_uuid=True), nullable=True)
     file_link = Column(Text, nullable=True)
 
+    # NEW: tags array (TEXT[]), non-null with empty-array default
+    tags = Column(ARRAY(String), nullable=False, server_default='{}')
+
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
@@ -42,6 +45,8 @@ class CompContent(Base):
         Index("idx_tbl_comp_contents_images_gin", "images", postgresql_using="gin"),
         Index("idx_tbl_comp_contents_created_by", "created_by"),
         Index("idx_tbl_comp_contents_updated_by", "updated_by"),
+        # NEW: GIN index for fast array queries (e.g., tags @> '{foo}' or tags && '{a,b}')
+        Index("idx_tbl_comp_contents_tags_gin", "tags", postgresql_using="gin"),
     )
 
 __all__ = ["CompContent"]

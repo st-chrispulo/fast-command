@@ -62,11 +62,40 @@ def _resolve_content_type(upload: UploadFile) -> str:
     return guessed or "application/octet-stream"
 
 
+def _normalize_tags(value) -> List[str]:
+    """
+    Normalize tags into a clean list of strings:
+      - Accepts "a, b, c" or ["a", "b", "c"] (any iterable).
+      - Strips whitespace, drops blanks, de-duplicates while preserving order.
+      - Keeps original casing (no lowercasing).
+    """
+    if value is None:
+        return []
+    items: List[str] = []
+    if isinstance(value, str):
+        parts = [p.strip() for p in value.split(",")]
+    elif isinstance(value, (list, tuple, set)):
+        parts = [str(p).strip() for p in value]
+    else:
+        parts = []
+
+    seen = set()
+    for p in parts:
+        if not p:
+            continue
+        if p not in seen:
+            seen.add(p)
+            items.append(p)
+    return items
+
+
 # ---------- Payload (reuse / extend your existing payload) ----------
 class CreateCompContentsPayload(BaseModel):
     name: str
     description: Optional[str] = None
     template_id: Optional[UUID] = None
+    # NEW: tags accepted as list or comma-separated string
+    tags: Optional[List[str]] = None
 
     @field_validator("name")
     @classmethod
@@ -80,6 +109,12 @@ class CreateCompContentsPayload(BaseModel):
     @classmethod
     def _strip_optional(cls, v):
         return v.strip() if isinstance(v, str) else v
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _tags_in(cls, v):
+        # Accept "a,b,c" or ["a","b","c"] or None
+        return _normalize_tags(v)
 
 
 # ---------- Command ----------
@@ -99,6 +134,7 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
       - thumbnail -> public https_url (string) or None
       - images -> list of https_url strings or None
       - file_link -> https_url string or None
+      - tags -> TEXT[] (list[str])
     """
 
     name = "components/contents/create_with_uploads"
@@ -179,7 +215,6 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
                 key_prefix = f"{dest_prefix}/thumbnail"
                 logger.debug("[create_with_uploads] uploading thumbnail name=%s key_prefix=%s", thumb_name, key_prefix)
                 t0 = time.monotonic()
-                # run blocking upload in thread
                 res = await asyncio.to_thread(
                     gcs.upload_fileobj,
                     thumbnail.file,
@@ -187,20 +222,17 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
                     key_prefix,
                     False,
                     thumb_ct,
-                ) if hasattr(gcs, "upload_fileobj") else await asyncio.to_thread(gcs.upload_fileobj, fileobj=thumbnail.file, filename=thumb_name, dest_prefix=key_prefix, public=False, content_type=thumb_ct)
-                # Note: above handles different call styles if your helper signature varies
+                ) if hasattr(gcs, "upload_fileobj") else await asyncio.to_thread(
+                    gcs.upload_fileobj, fileobj=thumbnail.file, filename=thumb_name, dest_prefix=key_prefix, public=False, content_type=thumb_ct
+                )
                 logger.info("[create_with_uploads] thumbnail uploaded elapsed=%.3fs ok=%s", time.monotonic() - t0, res.get("ok"))
-                # build usable url: prefer public_url, then signed url, then canonical https url
-                # Save key to DB
                 thumbnail_key = res["key"]
-
             except Exception as e:
                 logger.exception("[create_with_uploads] thumbnail upload failed: %s", e)
                 raise
 
         # Upload images (multiple)
         if images:
-            images_urls = []
             logger.info("[create_with_uploads] processing %d images", len(images))
             for idx, img in enumerate(images):
                 try:
@@ -216,15 +248,13 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
                         key_prefix,
                         False,
                         img_ct,
-                    ) if hasattr(gcs, "upload_fileobj") else await asyncio.to_thread(gcs.upload_fileobj, fileobj=img.file, filename=img_name, dest_prefix=key_prefix, public=False, content_type=img_ct)
-                    elapsed = time.monotonic() - t0
-                    logger.info("[create_with_uploads] image idx=%d uploaded elapsed=%.3fs ok=%s", idx, elapsed, res.get("ok"))
-                    # determine best url for this image
-                    # Save key to DB
+                    ) if hasattr(gcs, "upload_fileobj") else await asyncio.to_thread(
+                        gcs.upload_fileobj, fileobj=img.file, filename=img_name, dest_prefix=key_prefix, public=False, content_type=img_ct
+                    )
                     if images_keys is None:
                         images_keys = []
                     images_keys.append(res["key"])
-
+                    logger.info("[create_with_uploads] image idx=%d uploaded elapsed=%.3fs ok=%s", idx, time.monotonic() - t0, res.get("ok"))
                 except Exception as e:
                     logger.exception("[create_with_uploads] image idx=%d upload failed: %s", idx, e)
                     raise
@@ -245,12 +275,11 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
                     key_prefix,
                     False,
                     att_ct,
-                ) if hasattr(gcs, "upload_fileobj") else await asyncio.to_thread(gcs.upload_fileobj, fileobj=attachment.file, filename=att_name, dest_prefix=key_prefix, public=False, content_type=att_ct)
-                logger.info("[create_with_uploads] attachment uploaded elapsed=%.3fs ok=%s", time.monotonic() - t0, res.get("ok"))
-                # Save key to DB
+                ) if hasattr(gcs, "upload_fileobj") else await asyncio.to_thread(
+                    gcs.upload_fileobj, fileobj=attachment.file, filename=att_name, dest_prefix=key_prefix, public=False, content_type=att_ct
+                )
                 attachment_key = res["key"]
-
-
+                logger.info("[create_with_uploads] attachment uploaded elapsed=%.3fs ok=%s", time.monotonic() - t0, res.get("ok"))
             except Exception as e:
                 logger.exception("[create_with_uploads] attachment upload failed: %s", e)
                 raise
@@ -258,7 +287,6 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
         # Persist DB row
         db = SessionLocal()
         try:
-            # Prefer caller auth context when payload doesn't override created_by / updated_by
             current_uid = getattr(self, "user_id", None) or getattr(self, "actor_id", None)
             created_by = user_id
             updated_by = user_id
@@ -270,15 +298,17 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
             row = CompContent(
                 name=payload.name,
                 description=payload.description,
-                thumbnail=thumbnail_key,  # store key
-                images=images_keys,  # store keys list
+                thumbnail=thumbnail_key,     # store key
+                images=images_keys,          # store keys list
                 template_id=payload.template_id,
-                file_link=attachment_key,  # store key
+                file_link=attachment_key,    # store key
                 created_by=created_by,
                 updated_by=updated_by,
+                # NEW: persist normalized tags (TEXT[])
+                tags=(payload.tags or []),
             )
 
-            logger.debug("[create_with_uploads] inserting DB row name=%s created_by=%s", payload.name, created_by)
+            logger.debug("[create_with_uploads] inserting DB row name=%s created_by=%s tags=%s", payload.name, created_by, payload.tags or [])
             t0 = time.monotonic()
             db.add(row)
             db.commit()
@@ -301,7 +331,6 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
                     try:
                         signed_imgs.append(gcs.signed_get_url(k, expires_seconds=3600))
                     except Exception:
-                        # fall back to canonical if you like
                         signed_imgs.append(f"https://storage.googleapis.com/{gcs.bucket_name}/{k}")
             except Exception:
                 pass
@@ -313,7 +342,7 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
 
             return {
                 "status": "ok",
-                "data": _comp_contents_to_dict(row),  # will include KEYS
+                "data": _comp_contents_to_dict(row),
                 "gcs": {
                     "thumbnail": signed_thumb,
                     "images": signed_imgs,
@@ -328,7 +357,6 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
             raise
         finally:
             db.close()
-            # Close file handles if present (best-effort)
             try:
                 if thumbnail and getattr(thumbnail, "file", None) and not thumbnail.file.closed:
                     thumbnail.file.close()
@@ -357,6 +385,7 @@ def _comp_contents_to_dict(m: CompContent) -> dict:
         "images": m.images,  # JSONB column; already python object
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,
         "file_link": m.file_link,
+        "tags": getattr(m, "tags", []) or [],  # NEW: include tags
         "created_by": m.created_by,
         "updated_by": m.updated_by,
         "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,

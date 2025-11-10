@@ -57,6 +57,31 @@ def _resolve_content_type(upload: UploadFile) -> str:
     return guessed or "application/octet-stream"
 
 
+def _normalize_tags(value) -> List[str]:
+    """
+    Normalize tags to a clean list:
+      - Accepts "a, b" or ["a","b"] or None
+      - Strips whitespace, drops blanks, de-dupes while preserving order
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parts = [p.strip() for p in value.split(",")]
+    elif isinstance(value, (list, tuple, set)):
+        parts = [str(p).strip() for p in value]
+    else:
+        parts = []
+    out: List[str] = []
+    seen = set()
+    for p in parts:
+        if not p:
+            continue
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
 # ---------------- Payload (only editable fields) ----------------
 class UpdateCompContentsPayload(BaseModel):
     # We accept string to avoid hard pydantic UUID parsing errors
@@ -65,6 +90,11 @@ class UpdateCompContentsPayload(BaseModel):
     # Editable scalar fields (omit to leave unchanged)
     name: Optional[str] = None
     description: Optional[str] = None
+
+    # Tags editing
+    tags: Optional[List[str]] = None  # normalized via validator (can pass "a,b" or list)
+    tags_mode: Literal["append", "replace", "remove"] = Field(default="replace")
+    tags_clear: bool = False  # clear all tags regardless of tags/tags_mode
 
     # Images behavior (for file uploads only)
     images_mode: Literal["append", "replace"] = Field(default="append")
@@ -84,25 +114,29 @@ class UpdateCompContentsPayload(BaseModel):
     def _desc_trim(cls, v):
         return v.strip() if isinstance(v, str) else v
 
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _tags_in(cls, v):
+        return _normalize_tags(v)
+
 
 class UpdateComponentWithUploadsCommand(BaseCommand):
     """
     Partially updates a CompContent row. Only these fields are mutable:
-      - name, description, thumbnail, images, file_link, updated_by
+      - name, description, tags, thumbnail, images, file_link, updated_by
 
     Rules:
-      - If no file is attached and no *_clear flag is set, the field is left unchanged.
-      - To clear a field without uploading, set its clear flag to True.
+      - If no file is attached and no *_clear flag is set, the file fields are left unchanged.
+      - To clear a file field without uploading, set its clear flag to True.
       - For images:
           * images_mode = "append" (default): appends newly uploaded images.
           * images_mode = "replace": replaces current images with only the newly uploaded ones.
-          * images_clear = True: clears all existing images; if also uploading and mode=append,
-            result is just the newly uploaded ones.
-
-    File fields (multipart/form-data):
-      - thumbnail: single UploadFile (image)
-      - images:   multiple UploadFile (images)
-      - file_link: single UploadFile (any type)
+          * images_clear = True: clears all existing images.
+      - For tags (TEXT[]):
+          * tags_clear = True: clears all existing tags.
+          * tags_mode = "replace": replace with provided tags.
+          * tags_mode = "append": add provided tags (no duplicates).
+          * tags_mode = "remove": remove any provided tags from existing.
     """
 
     name = "components/contents/update_with_uploads"
@@ -147,7 +181,7 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
 
             # Auth context
             current_uid = getattr(self, "user_id", None) or getattr(self, "actor_id", None)
-            if self.require_auth and (payload.updated_by is None and current_uid is None):
+            if self.require_auth and current_uid is None:
                 raise HTTPException(status_code=401, detail="Unauthorized (no user context).")
 
             gcs = get_gcs()
@@ -215,6 +249,29 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
             if payload.description is not None:
                 row.description = payload.description
 
+            # -------- tags (append/replace/remove/clear) --------
+            current_tags: List[str] = list(row.tags or [])
+            if payload.tags_clear:
+                current_tags = []
+
+            if payload.tags is not None:
+                incoming = payload.tags
+                if payload.tags_mode == "replace":
+                    current_tags = incoming
+                elif payload.tags_mode == "append":
+                    seen = set(current_tags)
+                    for t in incoming:
+                        if t not in seen:
+                            current_tags.append(t)
+                            seen.add(t)
+                elif payload.tags_mode == "remove":
+                    remove_set = set(incoming)
+                    current_tags = [t for t in current_tags if t not in remove_set]
+
+            # Only assign if changed or row.tags is None
+            if payload.tags_clear or payload.tags is not None or row.tags is None:
+                row.tags = current_tags
+
             # -------- thumbnail (replace only if file provided; clear only if flag True) --------
             if payload.thumbnail_clear:
                 row.thumbnail = None
@@ -248,7 +305,6 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
                 else:
                     current_images.extend(new_image_urls)
 
-            # Only assign back if changed (protects from accidental nulling)
             if payload.images_clear or new_image_urls or (row.images is None):
                 row.images = current_images
 
@@ -322,6 +378,7 @@ def _comp_contents_to_dict(m: CompContent) -> dict:
         "images": m.images,
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,
         "file_link": m.file_link,
+        "tags": getattr(m, "tags", []) or [],  # <-- include tags
         "created_by": m.created_by,
         "updated_by": m.updated_by,
         "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,
