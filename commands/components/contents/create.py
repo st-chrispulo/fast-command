@@ -64,38 +64,34 @@ def _resolve_content_type(upload: UploadFile) -> str:
 
 def _normalize_tags(value) -> List[str]:
     """
-    Normalize tags into a clean list of strings:
-      - Accepts "a, b, c" or ["a", "b", "c"] (any iterable).
-      - Strips whitespace, drops blanks, de-duplicates while preserving order.
-      - Keeps original casing (no lowercasing).
+    Accept a single comma-separated string like "a, b, c"
+    (still tolerant of lists/tuples/sets just in case),
+    return a trimmed, de-duplicated list (original casing).
     """
     if value is None:
         return []
-    items: List[str] = []
     if isinstance(value, str):
         parts = [p.strip() for p in value.split(",")]
     elif isinstance(value, (list, tuple, set)):
+        # tolerate accidental list input; we still trim and dedupe
         parts = [str(p).strip() for p in value]
     else:
         parts = []
 
-    seen = set()
+    items, seen = [], set()
     for p in parts:
-        if not p:
-            continue
-        if p not in seen:
+        if p and p not in seen:
             seen.add(p)
             items.append(p)
     return items
-
 
 # ---------- Payload (reuse / extend your existing payload) ----------
 class CreateCompContentsPayload(BaseModel):
     name: str
     description: Optional[str] = None
     template_id: Optional[UUID] = None
-    # NEW: tags accepted as list or comma-separated string
-    tags: Optional[List[str]] = None
+    # CHANGED: tags is now a single string (e.g., "x, y, z")
+    tags: Optional[str] = None
 
     @field_validator("name")
     @classmethod
@@ -113,8 +109,10 @@ class CreateCompContentsPayload(BaseModel):
     @field_validator("tags", mode="before")
     @classmethod
     def _tags_in(cls, v):
-        # Accept "a,b,c" or ["a","b","c"] or None
-        return _normalize_tags(v)
+        # Accept None or string-ish; coerce non-strings to string just in case
+        if v is None:
+            return None
+        return str(v).strip()
 
 
 # ---------- Command ----------
@@ -298,14 +296,14 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
             row = CompContent(
                 name=payload.name,
                 description=payload.description,
-                thumbnail=thumbnail_key,     # store key
-                images=images_keys,          # store keys list
+                thumbnail=thumbnail_key,
+                images=images_keys,
                 template_id=payload.template_id,
-                file_link=attachment_key,    # store key
+                file_link=attachment_key,
                 created_by=created_by,
                 updated_by=updated_by,
-                # NEW: persist normalized tags (TEXT[])
-                tags=(payload.tags or []),
+                # CHANGED: parse the string into a list for DB TEXT[]
+                tags=_normalize_tags(payload.tags),
             )
 
             logger.debug("[create_with_uploads] inserting DB row name=%s created_by=%s tags=%s", payload.name, created_by, payload.tags or [])

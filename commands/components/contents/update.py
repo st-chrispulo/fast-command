@@ -92,7 +92,8 @@ class UpdateCompContentsPayload(BaseModel):
     description: Optional[str] = None
 
     # Tags editing
-    tags: Optional[List[str]] = None  # normalized via validator (can pass "a,b" or list)
+    # CHANGED: accept a single comma-separated string (e.g., "x, y, z")
+    tags: Optional[str] = None
     tags_mode: Literal["append", "replace", "remove"] = Field(default="replace")
     tags_clear: bool = False  # clear all tags regardless of tags/tags_mode
 
@@ -117,7 +118,10 @@ class UpdateCompContentsPayload(BaseModel):
     @field_validator("tags", mode="before")
     @classmethod
     def _tags_in(cls, v):
-        return _normalize_tags(v)
+        # CHANGED: coerce to a single trimmed string or None
+        if v is None:
+            return None
+        return str(v).strip() or None
 
 
 class UpdateComponentWithUploadsCommand(BaseCommand):
@@ -250,12 +254,14 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
                 row.description = payload.description
 
             # -------- tags (append/replace/remove/clear) --------
+            # CHANGED: payload.tags is a single string; normalize here.
             current_tags: List[str] = list(row.tags or [])
             if payload.tags_clear:
                 current_tags = []
 
-            if payload.tags is not None:
-                incoming = payload.tags
+            incoming: List[str] = _normalize_tags(payload.tags)
+
+            if incoming:
                 if payload.tags_mode == "replace":
                     current_tags = incoming
                 elif payload.tags_mode == "append":
@@ -267,8 +273,12 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
                 elif payload.tags_mode == "remove":
                     remove_set = set(incoming)
                     current_tags = [t for t in current_tags if t not in remove_set]
+            else:
+                # If tags_mode=replace AND user sent empty string and not tags_clear,
+                # interpret as "no-op" (do not wipe). Leave as-is unless tags_clear was set.
+                if payload.tags_mode == "replace" and not payload.tags_clear:
+                    pass
 
-            # Only assign if changed or row.tags is None
             if payload.tags_clear or payload.tags is not None or row.tags is None:
                 row.tags = current_tags
 
@@ -285,7 +295,6 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
             # -------- images (append/replace/clear) --------
             current_images: List[str] = list(row.images or [])
 
-            # Clear all images if requested
             if payload.images_clear:
                 current_images = []
 
@@ -350,7 +359,6 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
             raise HTTPException(status_code=500, detail="Failed to update content")
         finally:
             db.close()
-            # best-effort close file handles
             try:
                 if thumbnail and getattr(thumbnail, "file", None) and not thumbnail.file.closed:
                     thumbnail.file.close()
@@ -378,7 +386,7 @@ def _comp_contents_to_dict(m: CompContent) -> dict:
         "images": m.images,
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,
         "file_link": m.file_link,
-        "tags": getattr(m, "tags", []) or [],  # <-- include tags
+        "tags": getattr(m, "tags", []) or [],  # <-- include tags (array)
         "created_by": m.created_by,
         "updated_by": m.updated_by,
         "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,

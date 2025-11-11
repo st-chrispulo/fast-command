@@ -3,21 +3,25 @@ from typing import Optional, Any, Dict, List, Tuple, ClassVar, Set
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import or_, asc, desc
+from sqlalchemy import or_, asc, desc, func
 from sqlalchemy.orm import Session
+from sqlalchemy.dialects.postgresql import array, ARRAY, TEXT  # <-- IMPORTANT
 
 from commands.base_command import BaseCommand
 from auth.db import SessionLocal
 from integrations.gcs.gcs import get_gcs
 from models.components.tbl_comp_contents import CompContent
+from models.tbl_user_tags import UserTag
 
 
 class ContentListQuery(BaseModel):
     search_term: Optional[str] = Field(default=None, description="Search over name/description")
-    sort_key: Optional[str]   = Field(default="created_at", description="Sort field")
-    sort_order: Optional[str] = Field(default="desc", description='"asc" or "desc"')
+    sort_key: Optional[str]    = Field(default="created_at", description="Sort field")
+    sort_order: Optional[str]  = Field(default="desc", description='"asc" or "desc"')
     current_page: Optional[int] = Field(default=1, ge=1, description="1-based page")
-    limit: Optional[int]        = Field(default=10, ge=1, le=100, description="page size (<=100)")
+    limit: Optional[int]         = Field(default=10, ge=1, le=100, description="page size (<=100)")
+    # Comma-separated tags to filter by (ANY match)
+    tags: Optional[str] = Field(default=None, description="Comma-separated tag names to filter by (ANY match)")
 
     ALLOWED_SORT_KEYS: ClassVar[Set[str]] = {"id", "name", "created_at", "updated_at"}
 
@@ -43,55 +47,63 @@ def _apply_search(q, term: Optional[str]):
 
 
 def _apply_sort(q, sort_key: str, sort_order: str):
-    col = getattr(CompContent, sort_key, CompContent.created_at)
-    return q.order_by(asc(col) if sort_order == "asc" else desc(col))
+    col_expr = func.lower(CompContent.name) if sort_key == "name" else getattr(CompContent, sort_key, CompContent.created_at)
+    return q.order_by(asc(col_expr) if sort_order == "asc" else desc(col_expr))
 
 
 def _paginate(q, page: int, limit: int) -> Tuple[List[CompContent], int]:
-    total = q.count()
+    total = q.order_by(None).count()
     items = q.offset((page - 1) * limit).limit(limit).all()
     return items, total
 
 
-def _serialize(row: CompContent, gcs) -> Dict[str, Any]:
-    data = {
+def _iso(dt):
+    try:
+        return dt.isoformat()
+    except Exception:
+        return dt
+
+
+def _as_list(val) -> List[Any]:
+    return list(val or [])
+
+
+def _sign_url_maybe(gcs, url: Optional[str]) -> Optional[str]:
+    if not url:
+        return url
+    try:
+        return gcs.signed_get_url(url, expires_seconds=3600)
+    except Exception:
+        return url
+
+
+def _serialize_content(row: CompContent, gcs) -> Dict[str, Any]:
+    images = _as_list(getattr(row, "images", []))
+    signed_images = [_sign_url_maybe(gcs, img) for img in images]
+
+    return {
         "id": str(getattr(row, "id", "")),
         "name": getattr(row, "name", None),
         "description": getattr(row, "description", None),
-        "created_at": getattr(row, "created_at", None),
-        "updated_at": getattr(row, "updated_at", None),
+        "created_at": _iso(getattr(row, "created_at", None)),
+        "updated_at": _iso(getattr(row, "updated_at", None)),
         "created_by": getattr(row, "created_by", None),
-        "thumbnail": getattr(row, "thumbnail", None),
-        "images": list(getattr(row, "images", []) or []),
-        "file": getattr(row, "file_link", None),  # map to "file" in output
+        "thumbnail": _sign_url_maybe(gcs, getattr(row, "thumbnail", None)),
+        "images": signed_images,
+        "file": _sign_url_maybe(gcs, getattr(row, "file_link", None)),  # map file_link -> file
+        "tags": _as_list(getattr(row, "tags", [])),
     }
 
-    # Sign if present using GCS helper; on failure, keep original value.
-    if data["thumbnail"]:
-        try:
-            data["thumbnail"] = gcs.signed_get_url(data["thumbnail"], expires_seconds=3600)
-        except Exception:
-            pass
 
-    if data["file"]:
-        try:
-            data["file"] = gcs.signed_get_url(data["file"], expires_seconds=3600)
-        except Exception:
-            pass
-
-    if data["images"]:
-        signed_images: List[str] = []
-        for img in data["images"]:
-            if not img:
-                signed_images.append(img)
-                continue
-            try:
-                signed_images.append(gcs.signed_get_url(img, expires_seconds=3600))
-            except Exception:
-                signed_images.append(img)
-        data["images"] = signed_images
-
-    return data
+def _serialize_tag(t: UserTag) -> Dict[str, Any]:
+    return {
+        "name": t.name,
+        "color_hex": t.color_hex,
+        "description": t.description,
+        "is_active": bool(t.is_active),
+        "created_at": _iso(t.created_at),
+        "updated_at": _iso(t.updated_at),
+    }
 
 
 class ContentGetCommand(BaseCommand):
@@ -120,33 +132,62 @@ class ContentGetCommand(BaseCommand):
             "limit": limit,
             "errors": [],
             "error_code": None,
+            "tagging": {
+                "tags": []
+            },
         }
 
-        session: Optional[Session] = None
-        try:
-            session = SessionLocal()
+        with SessionLocal() as session:
+            try:
+                q = session.query(CompContent).filter(CompContent.created_by == user_id)
 
-            q = session.query(CompContent).filter(CompContent.created_by == user_id)
-            q = _apply_search(q, payload.search_term)
-            q = _apply_sort(q, payload.sort_key, payload.sort_order)
+                # Search
+                q = _apply_search(q, payload.search_term)
 
-            items, total = _paginate(q, current_page, limit)
-            resp["total_items"] = total
+                # Tags filter (ANY overlap) with proper Postgres text[] typing
+                raw_tags = payload.tags or ""
+                tags_list = [t.strip() for t in raw_tags.split(",") if t.strip()]
+                if tags_list:
+                    typed_array = array(tags_list, type_=ARRAY(TEXT()))  # text[] literal
+                    # Either of these two lines works; keep one:
+                    q = q.filter(CompContent.tags.op("&&")(typed_array))
+                    # q = q.filter(CompContent.tags.overlap(typed_array))
 
-            gcs = get_gcs()
-            resp["data"] = [_serialize(row, gcs) for row in items]
-            return resp
+                # Sort and page
+                q = _apply_sort(q, payload.sort_key, payload.sort_order)
+                items, total = _paginate(q, current_page, limit)
+                resp["total_items"] = total
 
-        except HTTPException:
-            raise
-        except Exception as e:
-            resp["errors"].append(str(e))
-            resp["error_code"] = "UNEXPECTED"
-            return resp
-        finally:
-            if session:
-                session.close()
+                # Serialize contents
+                gcs = get_gcs()
+                resp["data"] = [_serialize_content(row, gcs) for row in items]
 
-    # Optional: backward-compat for callers using `.run(...)`
+                # Tagging block (per-user tags)
+                try:
+                    uid = int(user_id)
+                except (TypeError, ValueError):
+                    uid = None
+
+                if uid is not None:
+                    tag_q = (
+                        session.query(UserTag)
+                        .filter(UserTag.user_id == uid)
+                        .order_by(func.lower(UserTag.name).asc())
+                    )
+                    # tag_q = tag_q.filter(UserTag.is_active.is_(True))  # enable if you want active-only
+                    user_tags = tag_q.all()
+                    resp["tagging"]["tags"] = [_serialize_tag(t) for t in user_tags]
+                else:
+                    resp["tagging"]["tags"] = []
+
+                return resp
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                resp["errors"].append(str(e))
+                resp["error_code"] = "UNEXPECTED"
+                return resp
+
     def run(self, payload: ContentListQuery, user_id: str = None):
         return self.execute(payload, user_id=user_id)
