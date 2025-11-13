@@ -1,4 +1,3 @@
-# commands/components/content/update.py
 import os
 import re
 import mimetypes
@@ -13,14 +12,14 @@ from pydantic import BaseModel, field_validator, Field
 from commands.base_command import BaseCommand
 from auth.db import SessionLocal
 from integrations.gcs.gcs import get_gcs
-from models.components.tbl_comp_contents import CompContent
+from models.components.tbl_comp_layouts import CompLayout
 
 # logger fallback
 try:
     from logger import logger
 except Exception:
     import logging as _logging
-    logger = _logging.getLogger("update_component_with_uploads")
+    logger = _logging.getLogger("update_layout_with_uploads")
     if not logger.handlers:
         handler = _logging.StreamHandler()
         handler.setFormatter(_logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
@@ -56,13 +55,7 @@ def _resolve_content_type(upload: UploadFile) -> str:
     guessed, _ = mimetypes.guess_type(name)
     return guessed or "application/octet-stream"
 
-
 def _normalize_tags(value) -> List[str]:
-    """
-    Normalize tags to a clean list:
-      - Accepts "a, b" or ["a","b"] or None
-      - Strips whitespace, drops blanks, de-dupes while preserving order
-    """
     if value is None:
         return []
     if isinstance(value, str):
@@ -71,38 +64,30 @@ def _normalize_tags(value) -> List[str]:
         parts = [str(p).strip() for p in value]
     else:
         parts = []
-    out: List[str] = []
-    seen = set()
+    out, seen = [], set()
     for p in parts:
-        if not p:
-            continue
-        if p not in seen:
+        if p and p not in seen:
             seen.add(p)
             out.append(p)
     return out
 
-
 # ---------------- Payload (only editable fields) ----------------
-class UpdateCompContentsPayload(BaseModel):
-    # We accept string to avoid hard pydantic UUID parsing errors
+class UpdateCompLayoutsPayload(BaseModel):
     id: str
-
-    # Editable scalar fields (omit to leave unchanged)
     name: Optional[str] = None
     description: Optional[str] = None
 
-    # Tags editing
-    # CHANGED: accept a single comma-separated string (e.g., "x, y, z")
+    # Tags editing (same semantics as contents)
     tags: Optional[str] = None
     tags_mode: Literal["append", "replace", "remove"] = Field(default="replace")
-    tags_clear: bool = False  # clear all tags regardless of tags/tags_mode
+    tags_clear: bool = False
 
-    # Images behavior (for file uploads only)
+    # Images behavior
     images_mode: Literal["append", "replace"] = Field(default="append")
 
-    # Explicit clear flags (default False -> do nothing if file not provided)
+    # Clear flags
     thumbnail_clear: bool = False
-    images_clear: bool = False         # clear all existing images (unless new ones provided with replace)
+    images_clear: bool = False
     file_link_clear: bool = False
 
     @field_validator("name")
@@ -118,39 +103,23 @@ class UpdateCompContentsPayload(BaseModel):
     @field_validator("tags", mode="before")
     @classmethod
     def _tags_in(cls, v):
-        # CHANGED: coerce to a single trimmed string or None
         if v is None:
             return None
         return str(v).strip() or None
 
 
-class UpdateComponentWithUploadsCommand(BaseCommand):
+class UpdateLayoutWithUploadsCommand(BaseCommand):
     """
-    Partially updates a CompContent row. Only these fields are mutable:
+    Partially updates a CompLayout row:
       - name, description, tags, thumbnail, images, file_link, updated_by
-
-    Rules:
-      - If no file is attached and no *_clear flag is set, the file fields are left unchanged.
-      - To clear a file field without uploading, set its clear flag to True.
-      - For images:
-          * images_mode = "append" (default): appends newly uploaded images.
-          * images_mode = "replace": replaces current images with only the newly uploaded ones.
-          * images_clear = True: clears all existing images.
-      - For tags (TEXT[]):
-          * tags_clear = True: clears all existing tags.
-          * tags_mode = "replace": replace with provided tags.
-          * tags_mode = "append": add provided tags (no duplicates).
-          * tags_mode = "remove": remove any provided tags from existing.
     """
-
-    name = "components/contents/update_with_uploads"
-    schema = UpdateCompContentsPayload
+    name = "components/layouts/update_with_uploads"
+    schema = UpdateCompLayoutsPayload
     require_auth = True
     method = "put"
     type = "file_upload"
-    group = "Content"
+    group = "Layout"
 
-    # IMPORTANT: these names must match the multipart fields, not the JSON body
     file_fields = [
         ("thumbnail", False),
         ("images", True),
@@ -158,30 +127,27 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
     ]
 
     base_folder = "uploads"
-
-    # Limits + types
     MAX_IMAGE_MB = 50
     MAX_FILE_MB = 200
     IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
-    ANY_FILE_TYPES = None  # allow any
+    ANY_FILE_TYPES = None
 
     async def execute(
         self,
-        payload: UpdateCompContentsPayload,
+        payload: UpdateCompLayoutsPayload,
         thumbnail: Optional[UploadFile] = None,
         images: Optional[List[UploadFile]] = None,
         file_link: Optional[UploadFile] = None,
         user_id: Optional[str] = None,
     ):
         start_t = time.monotonic()
-        logger.info("[update_with_uploads] start id=%s user_id=%s", payload.id, user_id)
+        logger.info("[layouts.update] start id=%s user_id=%s", payload.id, user_id)
 
         db = SessionLocal()
         try:
-            # Fetch row; ids are UUID in DB, but we store as text to query
-            row: Optional[CompContent] = db.query(CompContent).get(payload.id)
+            row: Optional[CompLayout] = db.query(CompLayout).get(payload.id)
             if not row:
-                raise HTTPException(status_code=404, detail="Content not found")
+                raise HTTPException(status_code=404, detail="Layout not found")
 
             gcs = get_gcs()
             dest_prefix = f"{self.base_folder}/{row.id}"
@@ -197,10 +163,8 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
                     pass
                 ct = _resolve_content_type(f)
                 size = len(data)
-                logger.debug(
-                    "[update_with_uploads] _read_and_check file=%s size=%d ct=%s elapsed=%.3fs",
-                    getattr(f, "filename", None), size, ct, time.monotonic() - t0
-                )
+                logger.debug("[layouts.update] _read file=%s size=%d ct=%s elapsed=%.3fs",
+                             getattr(f, "filename", None), size, ct, time.monotonic() - t0)
                 if size == 0:
                     raise ValueError(f"File '{f.filename}' is empty")
                 if size > max_mb * 1024 * 1024:
@@ -210,52 +174,36 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
                 return data, ct
 
             async def _upload_return_url(fileobj, filename: str, key_prefix: str, content_type: str) -> str:
-                # Try positional signature first; fallback to kwargs
                 try:
                     res = await asyncio.to_thread(
-                        gcs.upload_fileobj,
-                        fileobj,
-                        filename,
-                        key_prefix,
-                        False,
-                        content_type,
+                        gcs.upload_fileobj, fileobj, filename, key_prefix, False, content_type
                     )
                 except TypeError:
                     res = await asyncio.to_thread(
                         gcs.upload_fileobj,
-                        fileobj=fileobj,
-                        filename=filename,
-                        dest_prefix=key_prefix,
-                        public=False,
-                        content_type=content_type,
+                        fileobj=fileobj, filename=filename, dest_prefix=key_prefix, public=False, content_type=content_type
                     )
-
                 if not res or not res.get("ok"):
                     raise RuntimeError("Upload failed")
-
                 if res.get("public_url"):
                     return res["public_url"]
-
                 canonical = f"https://storage.googleapis.com/{res['bucket']}/{res['key']}"
                 try:
                     return gcs.signed_get_url(res["key"], expires_seconds=3600)
                 except Exception:
                     return canonical
 
-            # -------- scalar fields (leave unchanged if not provided) --------
+            # Scalars
             if payload.name is not None and payload.name.strip():
                 row.name = payload.name.strip()
             if payload.description is not None:
                 row.description = payload.description
 
-            # -------- tags (append/replace/remove/clear) --------
-            # CHANGED: payload.tags is a single string; normalize here.
+            # Tags
             current_tags: List[str] = list(row.tags or [])
             if payload.tags_clear:
                 current_tags = []
-
             incoming: List[str] = _normalize_tags(payload.tags)
-
             if incoming:
                 if payload.tags_mode == "replace":
                     current_tags = incoming
@@ -269,79 +217,69 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
                     remove_set = set(incoming)
                     current_tags = [t for t in current_tags if t not in remove_set]
             else:
-                # If tags_mode=replace AND user sent empty string and not tags_clear,
-                # interpret as "no-op" (do not wipe). Leave as-is unless tags_clear was set.
                 if payload.tags_mode == "replace" and not payload.tags_clear:
                     pass
-
             if payload.tags_clear or payload.tags is not None or row.tags is None:
                 row.tags = current_tags
 
-            # -------- thumbnail (replace only if file provided; clear only if flag True) --------
+            # Thumbnail
             if payload.thumbnail_clear:
                 row.thumbnail = None
-
             if thumbnail:
-                _, thumb_ct = await _read_and_check(thumbnail, self.MAX_IMAGE_MB, self.IMAGE_TYPES)
-                thumb_name = make_uuid_name(thumbnail.filename, "thumbnail")
-                url = await _upload_return_url(thumbnail.file, thumb_name, f"{dest_prefix}/thumbnail", thumb_ct)
+                _, ct = await _read_and_check(thumbnail, self.MAX_IMAGE_MB, self.IMAGE_TYPES)
+                fname = make_uuid_name(thumbnail.filename, "thumbnail")
+                url = await _upload_return_url(thumbnail.file, fname, f"{dest_prefix}/thumbnail", ct)
                 row.thumbnail = url
 
-            # -------- images (append/replace/clear) --------
+            # Images
             current_images: List[str] = list(row.images or [])
-
             if payload.images_clear:
                 current_images = []
 
-            new_image_urls: List[str] = []
+            new_urls: List[str] = []
             if images:
-                logger.info("[update_with_uploads] uploading %d image(s)", len(images))
                 for idx, img in enumerate(images):
-                    _, img_ct = await _read_and_check(img, self.MAX_IMAGE_MB, self.IMAGE_TYPES)
-                    img_name = make_uuid_name(img.filename, f"img{idx:03d}")
-                    url = await _upload_return_url(img.file, img_name, f"{dest_prefix}/images", img_ct)
+                    _, ct = await _read_and_check(img, self.MAX_IMAGE_MB, self.IMAGE_TYPES)
+                    fname = make_uuid_name(img.filename, f"img{idx:03d}")
+                    url = await _upload_return_url(img.file, fname, f"{dest_prefix}/images", ct)
                     if url:
-                        new_image_urls.append(url)
+                        new_urls.append(url)
 
-            if new_image_urls:
+            if new_urls:
                 if payload.images_mode == "replace":
-                    current_images = new_image_urls
+                    current_images = new_urls
                 else:
-                    current_images.extend(new_image_urls)
+                    current_images.extend(new_urls)
 
-            if payload.images_clear or new_image_urls or (row.images is None):
+            if payload.images_clear or new_urls or (row.images is None):
                 row.images = current_images
 
-            # -------- file_link (replace only if file provided; clear only if flag True) --------
+            # File link
             if payload.file_link_clear:
                 row.file_link = None
-
             if file_link:
-                _, att_ct = await _read_and_check(file_link, self.MAX_FILE_MB, self.ANY_FILE_TYPES)
-                att_name = make_uuid_name(file_link.filename, "file")
-                url = await _upload_return_url(file_link.file, att_name, f"{dest_prefix}/files", att_ct)
+                _, ct = await _read_and_check(file_link, self.MAX_FILE_MB, self.ANY_FILE_TYPES)
+                fname = make_uuid_name(file_link.filename, "file")
+                url = await _upload_return_url(file_link.file, fname, f"{dest_prefix}/files", ct)
                 row.file_link = url
 
             row.updated_by = user_id
 
-            # -------- persist --------
+            # Persist
             t0 = time.monotonic()
             db.add(row)
             db.commit()
             db.refresh(row)
-            logger.info("[update_with_uploads] DB commit elapsed=%.3fs id=%s", time.monotonic() - t0, row.id)
-
-            elapsed_total = time.monotonic() - start_t
-            logger.info("[update_with_uploads] finished total_elapsed=%.3fs id=%s", elapsed_total, row.id)
+            logger.info("[layouts.update] DB commit elapsed=%.3fs id=%s", time.monotonic() - t0, row.id)
 
             return {
                 "status": "ok",
-                "data": _comp_contents_to_dict(row),
+                "data": _comp_layouts_to_dict(row),
                 "gcs": {
                     "thumbnail": row.thumbnail,
                     "images": row.images or [],
                     "file_link": row.file_link,
-                    "content_folder": str(row.id),
+                    "layout_folder": str(row.id),
                 },
             }
 
@@ -349,9 +287,9 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
             db.rollback()
             raise
         except Exception as e:
-            logger.exception("[update_with_uploads] error - rolling back: %s", e)
+            logger.exception("[layouts.update] error - rolling back: %s", e)
             db.rollback()
-            raise HTTPException(status_code=500, detail="Failed to update content")
+            raise HTTPException(status_code=500, detail="Failed to update layout")
         finally:
             db.close()
             try:
@@ -372,7 +310,7 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
                 pass
 
 
-def _comp_contents_to_dict(m: CompContent) -> dict:
+def _comp_layouts_to_dict(m: CompLayout) -> dict:
     return {
         "id": str(m.id) if getattr(m, "id", None) is not None else None,
         "name": m.name,
@@ -381,7 +319,7 @@ def _comp_contents_to_dict(m: CompContent) -> dict:
         "images": m.images,
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,
         "file_link": m.file_link,
-        "tags": getattr(m, "tags", []) or [],  # <-- include tags (array)
+        "tags": getattr(m, "tags", []) or [],
         "created_by": m.created_by,
         "updated_by": m.updated_by,
         "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,

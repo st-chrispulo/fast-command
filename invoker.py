@@ -3,7 +3,14 @@ from commands import SayHelloCommand, LoginCommand, CreateUserCommand, LogoutCom
     AssignRoleToUserCommand, GetCommandNamesCommand, SyncPermissionCommand, TransformTemplateRenderCommand, \
     RegisterGithubUserCommand, GithubSignInCommand, GithubStartCommand, CreateCompContentsWithUploadsCommand, \
     UpdateComponentWithUploadsCommand, DeleteCompContentCommand, ContentGetCommand, TagDeleteCommand, \
-    TagListActiveCommand, TagCreateCommand
+    TagListActiveCommand, TagCreateCommand, CreateCompPagesWithUploadsCommand, CreateCompLayoutsWithUploadsCommand, \
+    UpdateLayoutWithUploadsCommand, DeleteCompLayoutCommand, LayoutGetCommand, CreateCompPagesWithUploadsCommand, \
+    UpdatePageWithUploadsCommand, DeleteCompPageCommand, PageGetCommand, CreateCompAuthenticationsWithUploadsCommand, \
+    UpdateCompAuthenticationsWithUploadsCommand, DeleteCompAuthenticationsCommand, AuthenticationGetCommand, \
+    CreateCompNavigationsWithUploadsCommand, UpdateNavigationsWithUploadsCommand, DeleteCompNavigationCommand, \
+    NavigationGetCommand, CreateFunnelWithUploadsCommand, UpdateFunnelWithUploadsCommand, DeleteFunnelsCommand, \
+    FunnelGetCommand, CreateProjectWithUploadsCommand, UpdateProjectWithUploadsCommand, ProjectGetCommand, \
+    DeleteProjectsCommand
 
 command_registry = [
     CreateUserCommand(),
@@ -29,6 +36,28 @@ command_registry = [
     TagListActiveCommand(),
     TagDeleteCommand(),
     TagCreateCommand(),
+    CreateCompLayoutsWithUploadsCommand(),
+    UpdateLayoutWithUploadsCommand(),
+    DeleteCompLayoutCommand(),
+    LayoutGetCommand(),
+    CreateCompPagesWithUploadsCommand(),
+    UpdatePageWithUploadsCommand(),
+    DeleteCompPageCommand(),
+    PageGetCommand(),
+    CreateCompAuthenticationsWithUploadsCommand(),
+    UpdateCompAuthenticationsWithUploadsCommand(),
+    DeleteCompAuthenticationsCommand(),
+    AuthenticationGetCommand(),
+    CreateCompNavigationsWithUploadsCommand(),
+    UpdateNavigationsWithUploadsCommand(),
+    DeleteCompNavigationCommand(),
+    NavigationGetCommand(),
+    CreateFunnelWithUploadsCommand(),
+    UpdateFunnelWithUploadsCommand(),
+    DeleteFunnelsCommand(),
+    FunnelGetCommand(),
+    CreateProjectWithUploadsCommand(),
+    UpdateProjectWithUploadsCommand(),
+    ProjectGetCommand(),
+    DeleteProjectsCommand(),
 ]
-
-

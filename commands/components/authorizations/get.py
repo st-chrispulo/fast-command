@@ -1,4 +1,4 @@
-# commands/components/content/get.py
+# commands/components/authentications/get.py
 from typing import Optional, Any, Dict, List, Tuple, ClassVar, Set
 
 from fastapi import HTTPException
@@ -10,11 +10,11 @@ from sqlalchemy.dialects.postgresql import array, ARRAY, TEXT  # <-- IMPORTANT
 from commands.base_command import BaseCommand
 from auth.db import SessionLocal
 from integrations.gcs.gcs import get_gcs
-from models.components.tbl_comp_contents import CompContent
+from models.components.tbl_comp_authentications import CompAuthentication
 from models.tbl_user_tags import UserTag
 
 
-class ContentListQuery(BaseModel):
+class AuthenticationListQuery(BaseModel):
     search_term: Optional[str] = Field(default=None, description="Search over name/description")
     sort_key: Optional[str]    = Field(default="created_at", description="Sort field")
     sort_order: Optional[str]  = Field(default="desc", description='"asc" or "desc"')
@@ -42,16 +42,16 @@ def _apply_search(q, term: Optional[str]):
     if not term:
         return q
     like = f"%{term.strip()}%"
-    return q.filter(or_(CompContent.name.ilike(like),
-                        CompContent.description.ilike(like)))
+    return q.filter(or_(CompAuthentication.name.ilike(like),
+                        CompAuthentication.description.ilike(like)))
 
 
 def _apply_sort(q, sort_key: str, sort_order: str):
-    col_expr = func.lower(CompContent.name) if sort_key == "name" else getattr(CompContent, sort_key, CompContent.created_at)
+    col_expr = func.lower(CompAuthentication.name) if sort_key == "name" else getattr(CompAuthentication, sort_key, CompAuthentication.created_at)
     return q.order_by(asc(col_expr) if sort_order == "asc" else desc(col_expr))
 
 
-def _paginate(q, page: int, limit: int) -> Tuple[List[CompContent], int]:
+def _paginate(q, page: int, limit: int) -> Tuple[List[CompAuthentication], int]:
     total = q.order_by(None).count()
     items = q.offset((page - 1) * limit).limit(limit).all()
     return items, total
@@ -68,18 +68,49 @@ def _as_list(val) -> List[Any]:
     return list(val or [])
 
 
-def _sign_url_maybe(gcs, url: Optional[str]) -> Optional[str]:
-    if not url:
-        return url
+def _sign_key_maybe(gcs, key: Optional[str]) -> Optional[str]:
+    if not key:
+        return key
     try:
-        return gcs.signed_get_url(url, expires_seconds=3600)
+        return gcs.signed_get_url(key, expires_seconds=3600)
     except Exception:
-        return url
+        # fall back to returning the original key if signing fails
+        return key
 
 
-def _serialize_content(row: CompContent, gcs) -> Dict[str, Any]:
+def _serialize_file_links(file_links: Optional[Dict[str, Any]], gcs) -> Dict[str, Any]:
+    """
+    file_links is a map like:
+      {
+        "login": { "key": "...", "filename": "...", "content_type": "...", "size": 123 },
+        ...
+      }
+    We return the same structure plus a best-effort signed url under "url".
+    """
+    out: Dict[str, Any] = {}
+    if not isinstance(file_links, dict):
+        return out
+
+    for name, meta in file_links.items():
+        try:
+            key = meta.get("key")
+            url = _sign_key_maybe(gcs, key)
+            out[name] = {
+                "key": key,
+                "filename": meta.get("filename"),
+                "content_type": meta.get("content_type"),
+                "size": meta.get("size"),
+                "url": url,
+            }
+        except Exception:
+            # If meta isn't a dict or unexpected shape, pass through as-is
+            out[name] = meta
+    return out
+
+
+def _serialize_auth(row: CompAuthentication, gcs) -> Dict[str, Any]:
     images = _as_list(getattr(row, "images", []))
-    signed_images = [_sign_url_maybe(gcs, img) for img in images]
+    signed_images = [_sign_key_maybe(gcs, img) for img in images]
 
     return {
         "id": str(getattr(row, "id", "")),
@@ -88,9 +119,11 @@ def _serialize_content(row: CompContent, gcs) -> Dict[str, Any]:
         "created_at": _iso(getattr(row, "created_at", None)),
         "updated_at": _iso(getattr(row, "updated_at", None)),
         "created_by": getattr(row, "created_by", None),
-        "thumbnail": _sign_url_maybe(gcs, getattr(row, "thumbnail", None)),
+        "updated_by": getattr(row, "updated_by", None),
+        "thumbnail": _sign_key_maybe(gcs, getattr(row, "thumbnail", None)),
         "images": signed_images,
-        "file": _sign_url_maybe(gcs, getattr(row, "file_link", None)),  # map file_link -> file
+        "template_id": str(getattr(row, "template_id")) if getattr(row, "template_id", None) else None,
+        "file_links": _serialize_file_links(getattr(row, "file_links", None), gcs),
         "tags": _as_list(getattr(row, "tags", [])),
     }
 
@@ -106,19 +139,19 @@ def _serialize_tag(t: UserTag) -> Dict[str, Any]:
     }
 
 
-class ContentGetCommand(BaseCommand):
+class AuthenticationGetCommand(BaseCommand):
     """
-    GET /components/content/get
+    GET /components/authentications/get
     - Schema comes from query params (Depends())
     - user_id injected by router: execute(payload, user_id=...)
     """
-    name = "components/contents/get"
-    schema = ContentListQuery
+    name = "components/authentications/get"
+    schema = AuthenticationListQuery
     require_auth = True
     method = "GET"
-    group = "Content"
+    group = "Authentication"
 
-    def execute(self, payload: ContentListQuery, user_id: str):
+    def execute(self, payload: AuthenticationListQuery, user_id: str):
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid token (missing user_id)")
 
@@ -139,7 +172,7 @@ class ContentGetCommand(BaseCommand):
 
         with SessionLocal() as session:
             try:
-                q = session.query(CompContent).filter(CompContent.created_by == user_id)
+                q = session.query(CompAuthentication).filter(CompAuthentication.created_by == user_id)
 
                 # Search
                 q = _apply_search(q, payload.search_term)
@@ -149,18 +182,17 @@ class ContentGetCommand(BaseCommand):
                 tags_list = [t.strip() for t in raw_tags.split(",") if t.strip()]
                 if tags_list:
                     typed_array = array(tags_list, type_=ARRAY(TEXT()))  # text[] literal
-                    # Either of these two lines works; keep one:
-                    q = q.filter(CompContent.tags.op("&&")(typed_array))
-                    # q = q.filter(CompContent.tags.overlap(typed_array))
+                    q = q.filter(CompAuthentication.tags.op("&&")(typed_array))
+                    # or: q = q.filter(CompAuthentication.tags.overlap(typed_array))
 
                 # Sort and page
                 q = _apply_sort(q, payload.sort_key, payload.sort_order)
                 items, total = _paginate(q, current_page, limit)
                 resp["total_items"] = total
 
-                # Serialize contents
+                # Serialize
                 gcs = get_gcs()
-                resp["data"] = [_serialize_content(row, gcs) for row in items]
+                resp["data"] = [_serialize_auth(row, gcs) for row in items]
 
                 # Tagging block (per-user tags)
                 try:
@@ -189,5 +221,5 @@ class ContentGetCommand(BaseCommand):
                 resp["error_code"] = "UNEXPECTED"
                 return resp
 
-    def run(self, payload: ContentListQuery, user_id: str = None):
+    def run(self, payload: AuthenticationListQuery, user_id: str = None):
         return self.execute(payload, user_id=user_id)

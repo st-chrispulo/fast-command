@@ -1,26 +1,24 @@
-# commands/components/content/get.py
 from typing import Optional, Any, Dict, List, Tuple, ClassVar, Set
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import or_, asc, desc, func
 from sqlalchemy.orm import Session
-from sqlalchemy.dialects.postgresql import array, ARRAY, TEXT  # <-- IMPORTANT
+from sqlalchemy.dialects.postgresql import array, ARRAY, TEXT
 
 from commands.base_command import BaseCommand
 from auth.db import SessionLocal
 from integrations.gcs.gcs import get_gcs
-from models.components.tbl_comp_contents import CompContent
+from models.tbl_funnels import Funnel
 from models.tbl_user_tags import UserTag
 
 
-class ContentListQuery(BaseModel):
+class FunnelListQuery(BaseModel):
     search_term: Optional[str] = Field(default=None, description="Search over name/description")
     sort_key: Optional[str]    = Field(default="created_at", description="Sort field")
     sort_order: Optional[str]  = Field(default="desc", description='"asc" or "desc"')
     current_page: Optional[int] = Field(default=1, ge=1, description="1-based page")
     limit: Optional[int]         = Field(default=10, ge=1, le=100, description="page size (<=100)")
-    # Comma-separated tags to filter by (ANY match)
     tags: Optional[str] = Field(default=None, description="Comma-separated tag names to filter by (ANY match)")
 
     ALLOWED_SORT_KEYS: ClassVar[Set[str]] = {"id", "name", "created_at", "updated_at"}
@@ -42,16 +40,20 @@ def _apply_search(q, term: Optional[str]):
     if not term:
         return q
     like = f"%{term.strip()}%"
-    return q.filter(or_(CompContent.name.ilike(like),
-                        CompContent.description.ilike(like)))
+    return q.filter(
+        or_(
+            Funnel.name.ilike(like),
+            Funnel.description.ilike(like),
+        )
+    )
 
 
 def _apply_sort(q, sort_key: str, sort_order: str):
-    col_expr = func.lower(CompContent.name) if sort_key == "name" else getattr(CompContent, sort_key, CompContent.created_at)
+    col_expr = func.lower(Funnel.name) if sort_key == "name" else getattr(Funnel, sort_key, Funnel.created_at)
     return q.order_by(asc(col_expr) if sort_order == "asc" else desc(col_expr))
 
 
-def _paginate(q, page: int, limit: int) -> Tuple[List[CompContent], int]:
+def _paginate(q, page: int, limit: int) -> Tuple[List[Funnel], int]:
     total = q.order_by(None).count()
     items = q.offset((page - 1) * limit).limit(limit).all()
     return items, total
@@ -77,10 +79,9 @@ def _sign_url_maybe(gcs, url: Optional[str]) -> Optional[str]:
         return url
 
 
-def _serialize_content(row: CompContent, gcs) -> Dict[str, Any]:
+def _serialize_funnel(row: Funnel, gcs) -> Dict[str, Any]:
     images = _as_list(getattr(row, "images", []))
     signed_images = [_sign_url_maybe(gcs, img) for img in images]
-
     return {
         "id": str(getattr(row, "id", "")),
         "name": getattr(row, "name", None),
@@ -90,7 +91,7 @@ def _serialize_content(row: CompContent, gcs) -> Dict[str, Any]:
         "created_by": getattr(row, "created_by", None),
         "thumbnail": _sign_url_maybe(gcs, getattr(row, "thumbnail", None)),
         "images": signed_images,
-        "file": _sign_url_maybe(gcs, getattr(row, "file_link", None)),  # map file_link -> file
+        "file": _sign_url_maybe(gcs, getattr(row, "file_link", None)),
         "tags": _as_list(getattr(row, "tags", [])),
     }
 
@@ -106,19 +107,17 @@ def _serialize_tag(t: UserTag) -> Dict[str, Any]:
     }
 
 
-class ContentGetCommand(BaseCommand):
+class FunnelGetCommand(BaseCommand):
     """
-    GET /components/content/get
-    - Schema comes from query params (Depends())
-    - user_id injected by router: execute(payload, user_id=...)
+    GET /components/funnels/get
     """
-    name = "components/contents/get"
-    schema = ContentListQuery
+    name = "components/funnels/get"
+    schema = FunnelListQuery
     require_auth = True
     method = "GET"
-    group = "Content"
+    group = "Funnel"
 
-    def execute(self, payload: ContentListQuery, user_id: str):
+    def execute(self, payload: FunnelListQuery, user_id: str):
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid token (missing user_id)")
 
@@ -132,37 +131,29 @@ class ContentGetCommand(BaseCommand):
             "limit": limit,
             "errors": [],
             "error_code": None,
-            "tagging": {
-                "tags": []
-            },
+            "tagging": {"tags": []},
         }
 
         with SessionLocal() as session:
             try:
-                q = session.query(CompContent).filter(CompContent.created_by == user_id)
+                q = session.query(Funnel).filter(Funnel.created_by == user_id)
 
-                # Search
                 q = _apply_search(q, payload.search_term)
 
-                # Tags filter (ANY overlap) with proper Postgres text[] typing
                 raw_tags = payload.tags or ""
                 tags_list = [t.strip() for t in raw_tags.split(",") if t.strip()]
                 if tags_list:
-                    typed_array = array(tags_list, type_=ARRAY(TEXT()))  # text[] literal
-                    # Either of these two lines works; keep one:
-                    q = q.filter(CompContent.tags.op("&&")(typed_array))
-                    # q = q.filter(CompContent.tags.overlap(typed_array))
+                    typed_array = array(tags_list, type_=ARRAY(TEXT()))
+                    q = q.filter(Funnel.tags.op("&&")(typed_array))
+                    # or: q = q.filter(Funnel.tags.overlap(typed_array))
 
-                # Sort and page
                 q = _apply_sort(q, payload.sort_key, payload.sort_order)
                 items, total = _paginate(q, current_page, limit)
                 resp["total_items"] = total
 
-                # Serialize contents
                 gcs = get_gcs()
-                resp["data"] = [_serialize_content(row, gcs) for row in items]
+                resp["data"] = [_serialize_funnel(row, gcs) for row in items]
 
-                # Tagging block (per-user tags)
                 try:
                     uid = int(user_id)
                 except (TypeError, ValueError):
@@ -174,7 +165,6 @@ class ContentGetCommand(BaseCommand):
                         .filter(UserTag.user_id == uid)
                         .order_by(func.lower(UserTag.name).asc())
                     )
-                    # tag_q = tag_q.filter(UserTag.is_active.is_(True))  # enable if you want active-only
                     user_tags = tag_q.all()
                     resp["tagging"]["tags"] = [_serialize_tag(t) for t in user_tags]
                 else:
@@ -189,5 +179,5 @@ class ContentGetCommand(BaseCommand):
                 resp["error_code"] = "UNEXPECTED"
                 return resp
 
-    def run(self, payload: ContentListQuery, user_id: str = None):
+    def run(self, payload: FunnelListQuery, user_id: str = None):
         return self.execute(payload, user_id=user_id)
