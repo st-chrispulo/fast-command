@@ -17,11 +17,13 @@ from models.tbl_user_tags import UserTag
 class ContentListQuery(BaseModel):
     search_term: Optional[str] = Field(default=None, description="Search over name/description")
     sort_key: Optional[str]    = Field(default="created_at", description="Sort field")
-    sort_order: Optional[str]  = Field(default="desc", description='"asc" or "desc"')
+    sort_order: Optional[str]  = Field(default="asc", description='"asc" or "desc"')
     current_page: Optional[int] = Field(default=1, ge=1, description="1-based page")
     limit: Optional[int]         = Field(default=10, ge=1, le=100, description="page size (<=100)")
     # Comma-separated tags to filter by (ANY match)
     tags: Optional[str] = Field(default=None, description="Comma-separated tag names to filter by (ANY match)")
+    # Optional filter by specific content id
+    id: Optional[str] = Field(default=None, description="Filter by specific content id")
 
     ALLOWED_SORT_KEYS: ClassVar[Set[str]] = {"id", "name", "created_at", "updated_at"}
 
@@ -42,12 +44,18 @@ def _apply_search(q, term: Optional[str]):
     if not term:
         return q
     like = f"%{term.strip()}%"
-    return q.filter(or_(CompContent.name.ilike(like),
-                        CompContent.description.ilike(like)))
+    return q.filter(
+        or_(
+            CompContent.name.ilike(like),
+            CompContent.description.ilike(like),
+        )
+    )
 
 
 def _apply_sort(q, sort_key: str, sort_order: str):
-    col_expr = func.lower(CompContent.name) if sort_key == "name" else getattr(CompContent, sort_key, CompContent.created_at)
+    col_expr = func.lower(CompContent.name) if sort_key == "name" else getattr(
+        CompContent, sort_key, CompContent.created_at
+    )
     return q.order_by(asc(col_expr) if sort_order == "asc" else desc(col_expr))
 
 
@@ -141,6 +149,10 @@ class ContentGetCommand(BaseCommand):
             try:
                 q = session.query(CompContent).filter(CompContent.created_by == user_id)
 
+                # Optional filter by specific content id
+                if payload.id:
+                    q = q.filter(CompContent.id == payload.id)
+
                 # Search
                 q = _apply_search(q, payload.search_term)
 
@@ -149,7 +161,6 @@ class ContentGetCommand(BaseCommand):
                 tags_list = [t.strip() for t in raw_tags.split(",") if t.strip()]
                 if tags_list:
                     typed_array = array(tags_list, type_=ARRAY(TEXT()))  # text[] literal
-                    # Either of these two lines works; keep one:
                     q = q.filter(CompContent.tags.op("&&")(typed_array))
                     # q = q.filter(CompContent.tags.overlap(typed_array))
 

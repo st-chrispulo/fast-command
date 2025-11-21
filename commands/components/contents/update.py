@@ -35,16 +35,19 @@ _FALLBACK_MIME = {
     ".png": "image/png",
 }
 
+
 def _safe_stem(name: str, default_stem: str) -> str:
     stem, _ = os.path.splitext(name or "")
     stem = (stem or default_stem).strip()
     stem = _SAFE_CHARS_RE.sub("_", stem) or default_stem
     return stem
 
+
 def make_uuid_name(filename: str, default_stem: str) -> str:
     stem = _safe_stem(filename, default_stem)
     ext = (os.path.splitext(filename or "")[1] or "").lower().lstrip(".") or "bin"
     return f"{stem}.{uuid4()}.{ext}"
+
 
 def _resolve_content_type(upload: UploadFile) -> str:
     if getattr(upload, "content_type", None):
@@ -103,7 +106,7 @@ class UpdateCompContentsPayload(BaseModel):
     # Explicit clear flags (default False -> do nothing if file not provided)
     thumbnail_clear: bool = False
     images_clear: bool = False         # clear all existing images (unless new ones provided with replace)
-    file_link_clear: bool = False
+    file_link_clear: bool = False      # clear main file (attachment)
 
     @field_validator("name")
     @classmethod
@@ -141,6 +144,9 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
           * tags_mode = "replace": replace with provided tags.
           * tags_mode = "append": add provided tags (no duplicates).
           * tags_mode = "remove": remove any provided tags from existing.
+      - For main file:
+          * multipart field is "attachment"
+          * uploaded file is stored to GCS and its key is saved in row.file_link
     """
 
     name = "components/contents/update_with_uploads"
@@ -154,7 +160,7 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
     file_fields = [
         ("thumbnail", False),
         ("images", True),
-        ("file_link", False),
+        ("attachment", False),
     ]
 
     base_folder = "uploads"
@@ -170,7 +176,7 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
         payload: UpdateCompContentsPayload,
         thumbnail: Optional[UploadFile] = None,
         images: Optional[List[UploadFile]] = None,
-        file_link: Optional[UploadFile] = None,
+        attachment: Optional[UploadFile] = None,
         user_id: Optional[str] = None,
     ):
         start_t = time.monotonic()
@@ -209,7 +215,7 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
                     raise ValueError(f"Unsupported content type '{ct}' for '{f.filename}'")
                 return data, ct
 
-            async def _upload_return_url(fileobj, filename: str, key_prefix: str, content_type: str) -> str:
+            async def _upload_and_return_key(fileobj, filename: str, key_prefix: str, content_type: str) -> str:
                 # Try positional signature first; fallback to kwargs
                 try:
                     res = await asyncio.to_thread(
@@ -233,14 +239,8 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
                 if not res or not res.get("ok"):
                     raise RuntimeError("Upload failed")
 
-                if res.get("public_url"):
-                    return res["public_url"]
-
-                canonical = f"https://storage.googleapis.com/{res['bucket']}/{res['key']}"
-                try:
-                    return gcs.signed_get_url(res["key"], expires_seconds=3600)
-                except Exception:
-                    return canonical
+                # IMPORTANT: store the GCS key, not a full URL
+                return res["key"]
 
             # -------- scalar fields (leave unchanged if not provided) --------
             if payload.name is not None and payload.name.strip():
@@ -249,7 +249,6 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
                 row.description = payload.description
 
             # -------- tags (append/replace/remove/clear) --------
-            # CHANGED: payload.tags is a single string; normalize here.
             current_tags: List[str] = list(row.tags or [])
             if payload.tags_clear:
                 current_tags = []
@@ -284,43 +283,56 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
             if thumbnail:
                 _, thumb_ct = await _read_and_check(thumbnail, self.MAX_IMAGE_MB, self.IMAGE_TYPES)
                 thumb_name = make_uuid_name(thumbnail.filename, "thumbnail")
-                url = await _upload_return_url(thumbnail.file, thumb_name, f"{dest_prefix}/thumbnail", thumb_ct)
-                row.thumbnail = url
+                thumb_key = await _upload_and_return_key(
+                    thumbnail.file,
+                    thumb_name,
+                    f"{dest_prefix}/thumbnail",
+                    thumb_ct,
+                )
+                row.thumbnail = thumb_key
 
             # -------- images (append/replace/clear) --------
+            # -------- images (replace/clear) --------
             current_images: List[str] = list(row.images or [])
 
             if payload.images_clear:
                 current_images = []
 
-            new_image_urls: List[str] = []
+            new_image_keys: List[str] = []
             if images:
                 logger.info("[update_with_uploads] uploading %d image(s)", len(images))
                 for idx, img in enumerate(images):
                     _, img_ct = await _read_and_check(img, self.MAX_IMAGE_MB, self.IMAGE_TYPES)
                     img_name = make_uuid_name(img.filename, f"img{idx:03d}")
-                    url = await _upload_return_url(img.file, img_name, f"{dest_prefix}/images", img_ct)
-                    if url:
-                        new_image_urls.append(url)
+                    img_key = await _upload_and_return_key(
+                        img.file,
+                        img_name,
+                        f"{dest_prefix}/images",
+                        img_ct,
+                    )
+                    new_image_keys.append(img_key)
 
-            if new_image_urls:
-                if payload.images_mode == "replace":
-                    current_images = new_image_urls
-                else:
-                    current_images.extend(new_image_urls)
+            if new_image_keys:
+                # 🔴 replace old images with new set
+                current_images = new_image_keys
 
-            if payload.images_clear or new_image_urls or (row.images is None):
+            if payload.images_clear or new_image_keys or (row.images is None):
                 row.images = current_images
 
-            # -------- file_link (replace only if file provided; clear only if flag True) --------
+            # -------- main file (file_link) via "attachment" --------
             if payload.file_link_clear:
                 row.file_link = None
 
-            if file_link:
-                _, att_ct = await _read_and_check(file_link, self.MAX_FILE_MB, self.ANY_FILE_TYPES)
-                att_name = make_uuid_name(file_link.filename, "file")
-                url = await _upload_return_url(file_link.file, att_name, f"{dest_prefix}/files", att_ct)
-                row.file_link = url
+            if attachment:
+                _, att_ct = await _read_and_check(attachment, self.MAX_FILE_MB, self.ANY_FILE_TYPES)
+                att_name = make_uuid_name(attachment.filename or "file", "file")
+                att_key = await _upload_and_return_key(
+                    attachment.file,
+                    att_name,
+                    f"{dest_prefix}/files",
+                    att_ct,
+                )
+                row.file_link = att_key
 
             row.updated_by = user_id
 
@@ -334,13 +346,36 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
             elapsed_total = time.monotonic() - start_t
             logger.info("[update_with_uploads] finished total_elapsed=%.3fs id=%s", elapsed_total, row.id)
 
+            # Build signed URLs for convenience (like create_with_uploads)
+            signed_thumb = None
+            signed_imgs: List[str] = []
+            signed_file = None
+            try:
+                if row.thumbnail:
+                    signed_thumb = gcs.signed_get_url(row.thumbnail, expires_seconds=3600)
+            except Exception:
+                pass
+            try:
+                for k in row.images or []:
+                    try:
+                        signed_imgs.append(gcs.signed_get_url(k, expires_seconds=3600))
+                    except Exception:
+                        signed_imgs.append(f"https://storage.googleapis.com/{gcs.bucket_name}/{k}")
+            except Exception:
+                pass
+            try:
+                if row.file_link:
+                    signed_file = gcs.signed_get_url(row.file_link, expires_seconds=3600)
+            except Exception:
+                pass
+
             return {
                 "status": "ok",
                 "data": _comp_contents_to_dict(row),
                 "gcs": {
-                    "thumbnail": row.thumbnail,
-                    "images": row.images or [],
-                    "file_link": row.file_link,
+                    "thumbnail": signed_thumb,
+                    "images": signed_imgs,
+                    "file_link": signed_file,
                     "content_folder": str(row.id),
                 },
             }
@@ -366,8 +401,8 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
             except Exception:
                 pass
             try:
-                if file_link and getattr(file_link, "file", None) and not file_link.file.closed:
-                    file_link.file.close()
+                if attachment and getattr(attachment, "file", None) and not attachment.file.closed:
+                    attachment.file.close()
             except Exception:
                 pass
 
@@ -381,7 +416,7 @@ def _comp_contents_to_dict(m: CompContent) -> dict:
         "images": m.images,
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,
         "file_link": m.file_link,
-        "tags": getattr(m, "tags", []) or [],  # <-- include tags (array)
+        "tags": getattr(m, "tags", []) or [],
         "created_by": m.created_by,
         "updated_by": m.updated_by,
         "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,
