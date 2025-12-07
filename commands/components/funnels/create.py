@@ -5,7 +5,7 @@ import mimetypes
 import time
 import asyncio
 from uuid import uuid4
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 from fastapi import UploadFile, HTTPException
 from pydantic import BaseModel, field_validator
 from uuid import UUID
@@ -79,6 +79,8 @@ class CreateFunnelPayload(BaseModel):
     template_id: Optional[UUID] = None
     # tags is a single comma-separated string (e.g., "a, b, c")
     tags: Optional[str] = None
+    # NEW: metadata (JSONB -> metadata_json)
+    metadata: Optional[Any] = None
 
     @field_validator("name")
     @classmethod
@@ -100,6 +102,32 @@ class CreateFunnelPayload(BaseModel):
             return None
         return str(v).strip()
 
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata_in(cls, v):
+        """
+        Accept dict, None, or JSON string and normalize to dict/None.
+        """
+        if v is None or isinstance(v, dict):
+            return v
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return None
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, dict):
+                    return parsed
+                # valid JSON but not an object
+                return {"value": parsed}
+            except Exception:
+                raise ValueError("metadata must be valid JSON if provided as string")
+        # Fallback: best-effort cast to dict
+        try:
+            return dict(v)
+        except Exception:
+            raise ValueError("metadata must be a JSON object or JSON string")
+
 
 class CreateFunnelWithUploadsCommand(BaseCommand):
     """
@@ -107,6 +135,8 @@ class CreateFunnelWithUploadsCommand(BaseCommand):
       - thumbnail: UploadFile (single)
       - images: List[UploadFile]
       - attachment: UploadFile -> stored as file_link
+
+    Also stores optional metadata -> metadata_json (JSONB).
     """
     name = "components/funnels/create_with_uploads"
     schema = CreateFunnelPayload
@@ -206,6 +236,7 @@ class CreateFunnelWithUploadsCommand(BaseCommand):
                 created_by=user_id,
                 updated_by=user_id,
                 tags=_normalize_tags(payload.tags),
+                metadata_json=payload.metadata or None,
             )
 
             db.add(row)
@@ -269,6 +300,7 @@ def _funnel_to_dict(m: Funnel) -> dict:
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,
         "file_link": m.file_link,
         "tags": getattr(m, "tags", []) or [],
+        "metadata": getattr(m, "metadata_json", None) or {},
         "created_by": m.created_by,
         "updated_by": m.updated_by,
         "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,

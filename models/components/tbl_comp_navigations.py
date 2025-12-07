@@ -42,6 +42,10 @@ class CompNavigation(Base):
 
     thumbnail = Column(Text, nullable=True)
     images = Column(JSONB, nullable=True)
+
+    # NEW: metadata JSONB column (DB name "metadata", attribute name metadata_json)
+    metadata_json = Column("metadata", JSONB, nullable=True)
+
     template_id = Column(UUID(as_uuid=True), nullable=True)
     file_links = Column(JSONB, nullable=True)  # JSONB (replaces file_link TEXT)
 
@@ -66,6 +70,11 @@ class CompNavigation(Base):
         Index("idx_tbl_comp_navigations_created_by", "created_by"),
         Index("idx_tbl_comp_navigations_updated_by", "updated_by"),
         Index("idx_tbl_comp_navigations_tags_gin", "tags", postgresql_using="gin"),
+        Index(
+            "idx_tbl_comp_navigations_metadata_gin",
+            "metadata",
+            postgresql_using="gin",
+        ),
         # If you later add a GIN index on file_links, uncomment the line below
         # Index("idx_tbl_comp_navigations_file_links_gin", "file_links", postgresql_using="gin"),
     )

@@ -6,7 +6,7 @@ import mimetypes
 import time
 import asyncio
 from uuid import uuid4
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 from fastapi import UploadFile, HTTPException
 from pydantic import BaseModel, field_validator
 from uuid import UUID
@@ -85,13 +85,16 @@ def _normalize_tags(value) -> List[str]:
             items.append(p)
     return items
 
+
 # ---------- Payload (reuse / extend your existing payload) ----------
 class CreateCompContentsPayload(BaseModel):
     name: str
     description: Optional[str] = None
     template_id: Optional[UUID] = None
-    # CHANGED: tags is now a single string (e.g., "x, y, z")
+    # tags as a single string (e.g., "x, y, z")
     tags: Optional[str] = None
+    # metadata: comes from multipart as a JSON string, but we want dict in code
+    metadata: Optional[Any] = None
 
     @field_validator("name")
     @classmethod
@@ -114,6 +117,44 @@ class CreateCompContentsPayload(BaseModel):
             return None
         return str(v).strip()
 
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata_in(cls, v):
+        """
+        Accept dict, None, or JSON string and normalize to dict/None.
+
+        This is important because multipart/form-data always gives us strings
+        for non-file fields, e.g.:
+
+            metadata = '{"contentType":"view","outputs":[{"key":"Output"}]}'
+        """
+        # Already correct types
+        if v is None or isinstance(v, dict):
+            return v
+
+        # Most common case: JSON string from FormData
+        if isinstance(v, str):
+            raw = v.strip()
+            if not raw:
+                return None
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"metadata must be valid JSON if provided as string: {e}")
+
+            if isinstance(parsed, dict):
+                return parsed
+
+            # Valid JSON but not an object (e.g. list/string/number)
+            # Wrap to keep DB column shape consistent
+            return {"value": parsed}
+
+        # Fallback: something like a mapping / object; try to coerce to dict
+        try:
+            return dict(v)
+        except Exception:
+            raise ValueError("metadata must be a JSON object or JSON string")
+
 
 # ---------- Command ----------
 class CreateCompContentsWithUploadsCommand(BaseCommand):
@@ -129,10 +170,11 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
       <base_folder>/<content_id>/files
 
     The DB row's fields:
-      - thumbnail -> public https_url (string) or None
-      - images -> list of https_url strings or None
-      - file_link -> https_url string or None
+      - thumbnail -> object key (string) or None
+      - images -> list of object keys or None
+      - file_link -> object key or None
       - tags -> TEXT[] (list[str])
+      - metadata_json -> JSONB (dict) or None
     """
 
     name = "components/contents/create_with_uploads"
@@ -195,12 +237,27 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
                 pass
             ct = _resolve_content_type(f)
             size = len(data)
-            logger.debug("[create_with_uploads] _read_and_check file=%s size=%d bytes ct=%s elapsed=%.3fs", getattr(f, "filename", None), size, ct, time.monotonic() - t0)
+            logger.debug(
+                "[create_with_uploads] _read_and_check file=%s size=%d bytes ct=%s elapsed=%.3fs",
+                getattr(f, "filename", None),
+                size,
+                ct,
+                time.monotonic() - t0,
+            )
             if size > max_mb * 1024 * 1024:
-                logger.warning("[create_with_uploads] file too large file=%s size=%d limit_mb=%s", getattr(f, "filename", None), size, max_mb)
+                logger.warning(
+                    "[create_with_uploads] file too large file=%s size=%d limit_mb=%s",
+                    getattr(f, "filename", None),
+                    size,
+                    max_mb,
+                )
                 raise ValueError(f"File '{f.filename}' exceeds {max_mb}MB limit")
             if allowed is not None and ct not in allowed:
-                logger.warning("[create_with_uploads] unsupported content type file=%s ct=%s", getattr(f, "filename", None), ct)
+                logger.warning(
+                    "[create_with_uploads] unsupported content type file=%s ct=%s",
+                    getattr(f, "filename", None),
+                    ct,
+                )
                 raise ValueError(f"Unsupported content type '{ct}' for '{f.filename}'")
             return data, ct
 
@@ -221,9 +278,18 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
                     False,
                     thumb_ct,
                 ) if hasattr(gcs, "upload_fileobj") else await asyncio.to_thread(
-                    gcs.upload_fileobj, fileobj=thumbnail.file, filename=thumb_name, dest_prefix=key_prefix, public=False, content_type=thumb_ct
+                    gcs.upload_fileobj,
+                    fileobj=thumbnail.file,
+                    filename=thumb_name,
+                    dest_prefix=key_prefix,
+                    public=False,
+                    content_type=thumb_ct,
                 )
-                logger.info("[create_with_uploads] thumbnail uploaded elapsed=%.3fs ok=%s", time.monotonic() - t0, res.get("ok"))
+                logger.info(
+                    "[create_with_uploads] thumbnail uploaded elapsed=%.3fs ok=%s",
+                    time.monotonic() - t0,
+                    res.get("ok"),
+                )
                 thumbnail_key = res["key"]
             except Exception as e:
                 logger.exception("[create_with_uploads] thumbnail upload failed: %s", e)
@@ -247,12 +313,22 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
                         False,
                         img_ct,
                     ) if hasattr(gcs, "upload_fileobj") else await asyncio.to_thread(
-                        gcs.upload_fileobj, fileobj=img.file, filename=img_name, dest_prefix=key_prefix, public=False, content_type=img_ct
+                        gcs.upload_fileobj,
+                        fileobj=img.file,
+                        filename=img_name,
+                        dest_prefix=key_prefix,
+                        public=False,
+                        content_type=img_ct,
                     )
                     if images_keys is None:
                         images_keys = []
                     images_keys.append(res["key"])
-                    logger.info("[create_with_uploads] image idx=%d uploaded elapsed=%.3fs ok=%s", idx, time.monotonic() - t0, res.get("ok"))
+                    logger.info(
+                        "[create_with_uploads] image idx=%d uploaded elapsed=%.3fs ok=%s",
+                        idx,
+                        time.monotonic() - t0,
+                        res.get("ok"),
+                    )
                 except Exception as e:
                     logger.exception("[create_with_uploads] image idx=%d upload failed: %s", idx, e)
                     raise
@@ -274,10 +350,19 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
                     False,
                     att_ct,
                 ) if hasattr(gcs, "upload_fileobj") else await asyncio.to_thread(
-                    gcs.upload_fileobj, fileobj=attachment.file, filename=att_name, dest_prefix=key_prefix, public=False, content_type=att_ct
+                    gcs.upload_fileobj,
+                    fileobj=attachment.file,
+                    filename=att_name,
+                    dest_prefix=key_prefix,
+                    public=False,
+                    content_type=att_ct,
                 )
                 attachment_key = res["key"]
-                logger.info("[create_with_uploads] attachment uploaded elapsed=%.3fs ok=%s", time.monotonic() - t0, res.get("ok"))
+                logger.info(
+                    "[create_with_uploads] attachment uploaded elapsed=%.3fs ok=%s",
+                    time.monotonic() - t0,
+                    res.get("ok"),
+                )
             except Exception as e:
                 logger.exception("[create_with_uploads] attachment upload failed: %s", e)
                 raise
@@ -285,7 +370,6 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
         # Persist DB row
         db = SessionLocal()
         try:
-            current_uid = getattr(self, "user_id", None) or getattr(self, "actor_id", None)
             created_by = user_id
             updated_by = user_id
 
@@ -302,16 +386,26 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
                 file_link=attachment_key,
                 created_by=created_by,
                 updated_by=updated_by,
-                # CHANGED: parse the string into a list for DB TEXT[]
                 tags=_normalize_tags(payload.tags),
+                # store as JSONB via metadata_json
+                metadata_json=payload.metadata or None,
             )
 
-            logger.debug("[create_with_uploads] inserting DB row name=%s created_by=%s tags=%s", payload.name, created_by, payload.tags or [])
+            logger.debug(
+                "[create_with_uploads] inserting DB row name=%s created_by=%s tags=%s",
+                payload.name,
+                created_by,
+                payload.tags or [],
+            )
             t0 = time.monotonic()
             db.add(row)
             db.commit()
             db.refresh(row)
-            logger.info("[create_with_uploads] DB commit elapsed=%.3fs id=%s", time.monotonic() - t0, getattr(row, "id", None))
+            logger.info(
+                "[create_with_uploads] DB commit elapsed=%.3fs id=%s",
+                time.monotonic() - t0,
+                getattr(row, "id", None),
+            )
 
             elapsed_total = time.monotonic() - start_t
             logger.info("[create_with_uploads] finished total_elapsed=%.3fs content_id=%s", elapsed_total, content_id)
@@ -383,7 +477,8 @@ def _comp_contents_to_dict(m: CompContent) -> dict:
         "images": m.images,  # JSONB column; already python object
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,
         "file_link": m.file_link,
-        "tags": getattr(m, "tags", []) or [],  # NEW: include tags
+        "tags": getattr(m, "tags", []) or [],
+        "metadata": getattr(m, "metadata_json", None) or {},  # expose metadata_json
         "created_by": m.created_by,
         "updated_by": m.updated_by,
         "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,

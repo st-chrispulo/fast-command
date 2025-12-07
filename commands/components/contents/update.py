@@ -1,11 +1,12 @@
 # commands/components/content/update.py
 import os
 import re
+import json
 import mimetypes
 import time
 import asyncio
 from uuid import uuid4
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Dict, Any
 
 from fastapi import UploadFile, HTTPException
 from pydantic import BaseModel, field_validator, Field
@@ -108,6 +109,9 @@ class UpdateCompContentsPayload(BaseModel):
     images_clear: bool = False         # clear all existing images (unless new ones provided with replace)
     file_link_clear: bool = False      # clear main file (attachment)
 
+    # metadata (maps to CompContent.metadata_json / JSONB)
+    metadata: Optional[Any] = None
+
     @field_validator("name")
     @classmethod
     def _name_trim(cls, v):
@@ -121,16 +125,55 @@ class UpdateCompContentsPayload(BaseModel):
     @field_validator("tags", mode="before")
     @classmethod
     def _tags_in(cls, v):
-        # CHANGED: coerce to a single trimmed string or None
+        # coerce to a single trimmed string or None
         if v is None:
             return None
         return str(v).strip() or None
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata_in(cls, v):
+        """
+        Accept dict, None, or JSON string and normalize to dict/None.
+
+        This mirrors the create_with_uploads behavior so that multipart/form-data
+        requests that send:
+
+            metadata = '{"contentType":"view","outputs":[{"key":"Output"}]}'
+
+        are parsed into a Python dict before hitting the DB.
+        """
+        # Already a dict or None → ok
+        if v is None or isinstance(v, dict):
+            return v
+
+        # Most common case: JSON string from FormData
+        if isinstance(v, str):
+            raw = v.strip()
+            if not raw:
+                return None
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"metadata must be valid JSON if provided as string: {e}")
+
+            if isinstance(parsed, dict):
+                return parsed
+
+            # Valid JSON but not an object, wrap to keep column shape consistent
+            return {"value": parsed}
+
+        # Fallback: something mapping-like; try to coerce
+        try:
+            return dict(v)
+        except Exception:
+            raise ValueError("metadata must be a JSON object or JSON string")
 
 
 class UpdateComponentWithUploadsCommand(BaseCommand):
     """
     Partially updates a CompContent row. Only these fields are mutable:
-      - name, description, tags, thumbnail, images, file_link, updated_by
+      - name, description, tags, thumbnail, images, file_link, metadata_json, updated_by
 
     Rules:
       - If no file is attached and no *_clear flag is set, the file fields are left unchanged.
@@ -147,6 +190,8 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
       - For main file:
           * multipart field is "attachment"
           * uploaded file is stored to GCS and its key is saved in row.file_link
+      - For metadata_json:
+          * if `metadata` is provided, it REPLACES the existing metadata_json.
     """
 
     name = "components/contents/update_with_uploads"
@@ -276,6 +321,10 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
             if payload.tags_clear or payload.tags is not None or row.tags is None:
                 row.tags = current_tags
 
+            # -------- metadata_json (full replacement if provided) --------
+            if payload.metadata is not None:
+                row.metadata_json = payload.metadata or None
+
             # -------- thumbnail (replace only if file provided; clear only if flag True) --------
             if payload.thumbnail_clear:
                 row.thumbnail = None
@@ -292,7 +341,6 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
                 row.thumbnail = thumb_key
 
             # -------- images (append/replace/clear) --------
-            # -------- images (replace/clear) --------
             current_images: List[str] = list(row.images or [])
 
             if payload.images_clear:
@@ -313,7 +361,7 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
                     new_image_keys.append(img_key)
 
             if new_image_keys:
-                # 🔴 replace old images with new set
+                # NOTE: current implementation always replaces with new set when any new images are uploaded
                 current_images = new_image_keys
 
             if payload.images_clear or new_image_keys or (row.images is None):
@@ -417,6 +465,7 @@ def _comp_contents_to_dict(m: CompContent) -> dict:
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,
         "file_link": m.file_link,
         "tags": getattr(m, "tags", []) or [],
+        "metadata": getattr(m, "metadata_json", None) or {},
         "created_by": m.created_by,
         "updated_by": m.updated_by,
         "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,

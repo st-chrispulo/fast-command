@@ -5,6 +5,7 @@ import re
 import mimetypes
 import time
 import asyncio
+import json
 from uuid import uuid4
 from typing import Optional, List, Any, Dict
 from fastapi import UploadFile, HTTPException
@@ -47,6 +48,7 @@ MAX_IMAGE_MB = 50
 MAX_FILE_MB = 200
 IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
+
 def make_uuid_name(filename: str, default_stem: str) -> str:
     name = filename or ""
     stem, ext = os.path.splitext(name)
@@ -54,6 +56,7 @@ def make_uuid_name(filename: str, default_stem: str) -> str:
     stem = _SAFE_CHARS_RE.sub("_", stem) or default_stem
     ext = (ext or "").lower().lstrip(".") or "bin"
     return f"{stem}.{uuid4()}.{ext}"
+
 
 def _resolve_content_type(upload: UploadFile) -> str:
     if getattr(upload, "content_type", None):
@@ -64,6 +67,7 @@ def _resolve_content_type(upload: UploadFile) -> str:
         return _FALLBACK_MIME[ext]
     guessed, _ = mimetypes.guess_type(name)
     return guessed or "application/octet-stream"
+
 
 def _normalize_tags(value) -> List[str]:
     if value is None:
@@ -81,10 +85,12 @@ def _normalize_tags(value) -> List[str]:
             items.append(p)
     return items
 
+
 def _is_truthy(v: Optional[str]) -> bool:
     if v is None:
         return False
     return str(v).strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+
 
 # ---------- payload ----------
 
@@ -94,6 +100,10 @@ class UpdateCompAuthenticationsPayload(BaseModel):
     description: Optional[str] = None
     template_id: Optional[UUID] = None
     tags: Optional[str] = None  # comma-separated
+
+    # metadata JSON (maps to CompAuthentication.metadata_json / JSONB)
+    # Accepts dict or JSON string; full replacement of existing metadata_json.
+    metadata: Optional[Any] = None
 
     # clears/removals come as strings in form-data ("1", "true", etc.)
     clear_thumbnail: Optional[str] = None
@@ -119,6 +129,34 @@ class UpdateCompAuthenticationsPayload(BaseModel):
     def _tags_in(cls, v):
         return str(v).strip() if v is not None else v
 
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata_in(cls, v):
+        """
+        Accept dict, None, or JSON string and normalize to dict/None.
+        Same behavior as in create_with_uploads & other component commands.
+        """
+        if v is None or isinstance(v, dict):
+            return v
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return None
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, dict):
+                    return parsed
+                # valid JSON but not an object -> wrap
+                return {"value": parsed}
+            except Exception as e:
+                raise ValueError(f"metadata must be valid JSON if provided as string: {e}")
+        # Fallback: best-effort cast to dict
+        try:
+            return dict(v)
+        except Exception:
+            raise ValueError("metadata must be a JSON object or JSON string")
+
+
 # ---------- command ----------
 
 class UpdateCompAuthenticationsWithUploadsCommand(BaseCommand):
@@ -130,6 +168,7 @@ class UpdateCompAuthenticationsWithUploadsCommand(BaseCommand):
     Text:
       - id (UUID, required)
       - name?, description?, template_id?, tags?
+      - metadata? (JSON object or JSON string) -> stored in metadata_json (full replacement)
       - clear_thumbnail? ("1"/"true")
       - clear_images? ("1"/"true")
       - remove_image_keys[]?
@@ -231,7 +270,12 @@ class UpdateCompAuthenticationsWithUploadsCommand(BaseCommand):
                     f.file.seek(0)
                 except Exception:
                     size = None
-                return {"key": res["key"], "filename": f.filename, "content_type": ct, "size": size}
+                return {
+                    "key": res["key"],
+                    "filename": f.filename,
+                    "content_type": ct,
+                    "size": size,
+                }
 
             # ---------- text updates ----------
             if payload.name is not None:
@@ -242,6 +286,10 @@ class UpdateCompAuthenticationsWithUploadsCommand(BaseCommand):
                 row.template_id = payload.template_id
             if payload.tags is not None:
                 row.tags = _normalize_tags(payload.tags)
+
+            # metadata: if provided, full replacement of metadata_json
+            if payload.metadata is not None:
+                row.metadata_json = payload.metadata or None
 
             # ---------- thumbnail ----------
             if _is_truthy(payload.clear_thumbnail):
@@ -328,13 +376,19 @@ class UpdateCompAuthenticationsWithUploadsCommand(BaseCommand):
         finally:
             db.close()
             # Close uploads if any
-            all_files: List[UploadFile] = [thumbnail] + (images or []) + [login, register, logout_button, user_profile]
+            all_files: List[UploadFile] = [thumbnail] + (images or []) + [
+                login,
+                register,
+                logout_button,
+                user_profile,
+            ]
             for uf in all_files:
                 try:
                     if uf and getattr(uf, "file", None) and not uf.file.closed:
                         uf.file.close()
                 except Exception:
                     pass
+
 
 # ---------- serializer ----------
 
@@ -347,6 +401,7 @@ def _comp_auth_to_dict(m: CompAuthentication) -> dict:
         "images": getattr(m, "images", None),
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,
         "file_links": getattr(m, "file_links", None) or {},
+        "metadata": getattr(m, "metadata_json", None) or {},
         "tags": getattr(m, "tags", []) or [],
         "created_by": m.created_by,
         "updated_by": m.updated_by,

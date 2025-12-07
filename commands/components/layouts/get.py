@@ -40,12 +40,20 @@ def _apply_search(q, term: Optional[str]):
     if not term:
         return q
     like = f"%{term.strip()}%"
-    return q.filter(or_(CompLayout.name.ilike(like),
-                        CompLayout.description.ilike(like)))
+    return q.filter(
+        or_(
+            CompLayout.name.ilike(like),
+            CompLayout.description.ilike(like),
+        )
+    )
 
 
 def _apply_sort(q, sort_key: str, sort_order: str):
-    col_expr = func.lower(CompLayout.name) if sort_key == "name" else getattr(CompLayout, sort_key, CompLayout.created_at)
+    col_expr = (
+        func.lower(CompLayout.name)
+        if sort_key == "name"
+        else getattr(CompLayout, sort_key, CompLayout.created_at)
+    )
     return q.order_by(asc(col_expr) if sort_order == "asc" else desc(col_expr))
 
 
@@ -89,6 +97,8 @@ def _serialize_layout(row: CompLayout, gcs) -> Dict[str, Any]:
         "images": signed_images,
         "file": _sign_url_maybe(gcs, getattr(row, "file_link", None)),
         "tags": _as_list(getattr(row, "tags", [])),
+        # NEW: expose metadata_json as "metadata"
+        "metadata": getattr(row, "metadata_json", None) or {},
     }
 
 

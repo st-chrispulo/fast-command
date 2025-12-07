@@ -53,8 +53,10 @@ def _apply_search(q, term: Optional[str]):
 
 
 def _apply_sort(q, sort_key: str, sort_order: str):
-    col_expr = func.lower(CompContent.name) if sort_key == "name" else getattr(
-        CompContent, sort_key, CompContent.created_at
+    col_expr = (
+        func.lower(CompContent.name)
+        if sort_key == "name"
+        else getattr(CompContent, sort_key, CompContent.created_at)
     )
     return q.order_by(asc(col_expr) if sort_order == "asc" else desc(col_expr))
 
@@ -80,6 +82,7 @@ def _sign_url_maybe(gcs, url: Optional[str]) -> Optional[str]:
     if not url:
         return url
     try:
+        # Note: `url` is actually a GCS object key here; we return a signed URL.
         return gcs.signed_get_url(url, expires_seconds=3600)
     except Exception:
         return url
@@ -100,6 +103,8 @@ def _serialize_content(row: CompContent, gcs) -> Dict[str, Any]:
         "images": signed_images,
         "file": _sign_url_maybe(gcs, getattr(row, "file_link", None)),  # map file_link -> file
         "tags": _as_list(getattr(row, "tags", [])),
+        # NEW: expose metadata_json as "metadata"
+        "metadata": getattr(row, "metadata_json", None) or {},
     }
 
 
@@ -116,7 +121,7 @@ def _serialize_tag(t: UserTag) -> Dict[str, Any]:
 
 class ContentGetCommand(BaseCommand):
     """
-    GET /components/content/get
+    GET /components/contents/get
     - Schema comes from query params (Depends())
     - user_id injected by router: execute(payload, user_id=...)
     """

@@ -1,10 +1,12 @@
 import os
 import re
+import json
 import mimetypes
 import time
 import asyncio
 from uuid import uuid4
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
+
 from fastapi import UploadFile, HTTPException
 from pydantic import BaseModel, field_validator
 from uuid import UUID
@@ -79,6 +81,8 @@ class UpdateFunnelPayload(BaseModel):
     template_id: Optional[UUID] = None
     # tags can be comma-separated string or list-like
     tags: Optional[Any] = None
+    # NEW: metadata (JSONB -> metadata_json)
+    metadata: Optional[Any] = None
 
     @field_validator("name")
     @classmethod
@@ -102,6 +106,33 @@ class UpdateFunnelPayload(BaseModel):
             return None
         return v  # keep as-is; _normalize_tags will handle str/list/etc.
 
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata_in(cls, v):
+        """
+        Accept dict, None, or JSON string and normalize to dict/None.
+        """
+        if v is None or isinstance(v, dict):
+            return v
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                # allow clearing metadata by sending empty string
+                return None
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, dict):
+                    return parsed
+                # valid JSON but not an object
+                return {"value": parsed}
+            except Exception:
+                raise ValueError("metadata must be valid JSON if provided as string")
+        # Fallback: best-effort cast to dict
+        try:
+            return dict(v)
+        except Exception:
+            raise ValueError("metadata must be a JSON object or JSON string")
+
 
 class UpdateFunnelWithUploadsCommand(BaseCommand):
     """
@@ -109,6 +140,8 @@ class UpdateFunnelWithUploadsCommand(BaseCommand):
       - thumbnail: UploadFile (single) -> replaces existing thumbnail if provided
       - images: List[UploadFile]      -> replaces existing images list if provided
       - attachment: UploadFile        -> replaces existing file_link if provided
+
+    Also updates metadata_json from 'metadata' in payload when provided.
     """
     name = "components/funnels/update_with_uploads"
     schema = UpdateFunnelPayload
@@ -219,6 +252,10 @@ class UpdateFunnelWithUploadsCommand(BaseCommand):
             if payload.tags is not None:
                 row.tags = _normalize_tags(payload.tags)
 
+            # NEW: metadata_json
+            if payload.metadata is not None:
+                row.metadata_json = payload.metadata or None
+
             # Apply file fields
             row.thumbnail = thumbnail_key
             row.images = images_keys
@@ -297,6 +334,7 @@ def _funnel_to_dict(m: Funnel) -> dict:
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,
         "file_link": m.file_link,
         "tags": getattr(m, "tags", []) or [],
+        "metadata": getattr(m, "metadata_json", None) or {},
         "created_by": m.created_by,
         "updated_by": m.updated_by,
         "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,

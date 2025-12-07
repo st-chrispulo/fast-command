@@ -5,6 +5,7 @@ import re
 import mimetypes
 import time
 import asyncio
+import json
 from uuid import uuid4
 from typing import Optional, List, Any, Dict
 from fastapi import UploadFile, HTTPException
@@ -48,6 +49,7 @@ MAX_FILE_MB = 200
 IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 ANY_FILE_TYPES = None  # allow any (validate size only)
 
+
 def make_uuid_name(filename: str, default_stem: str) -> str:
     name = filename or ""
     stem, ext = os.path.splitext(name)
@@ -55,6 +57,7 @@ def make_uuid_name(filename: str, default_stem: str) -> str:
     stem = _SAFE_CHARS_RE.sub("_", stem) or default_stem
     ext = (ext or "").lower().lstrip(".") or "bin"
     return f"{stem}.{uuid4()}.{ext}"
+
 
 def _resolve_content_type(upload: UploadFile) -> str:
     if getattr(upload, "content_type", None):
@@ -65,6 +68,7 @@ def _resolve_content_type(upload: UploadFile) -> str:
         return _FALLBACK_MIME[ext]
     guessed, _ = mimetypes.guess_type(name)
     return guessed or "application/octet-stream"
+
 
 def _normalize_tags(value) -> List[str]:
     if value is None:
@@ -82,6 +86,7 @@ def _normalize_tags(value) -> List[str]:
             items.append(p)
     return items
 
+
 # ---------- payload ----------
 
 class CreateCompAuthenticationsPayload(BaseModel):
@@ -89,6 +94,9 @@ class CreateCompAuthenticationsPayload(BaseModel):
     description: Optional[str] = None
     template_id: Optional[UUID] = None
     tags: Optional[str] = None  # comma-separated
+    # metadata_json that maps to CompAuthentication.metadata_json
+    # Can be sent as JSON or as a JSON string in the multipart body
+    metadata: Optional[Any] = None
 
     @field_validator("name")
     @classmethod
@@ -110,6 +118,34 @@ class CreateCompAuthenticationsPayload(BaseModel):
             return None
         return str(v).strip()
 
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata_in(cls, v):
+        """
+        Accept dict, None, or JSON string and normalize to dict/None.
+        Same semantics as other *_with_uploads commands.
+        """
+        if v is None or isinstance(v, dict):
+            return v
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return None
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, dict):
+                    return parsed
+                # If JSON is valid but not an object, wrap
+                return {"value": parsed}
+            except Exception as e:
+                raise ValueError(f"metadata must be valid JSON if provided as string: {e}")
+        # Fallback: best-effort cast to dict
+        try:
+            return dict(v)
+        except Exception:
+            raise ValueError("metadata must be a JSON object or JSON string")
+
+
 # ---------- command ----------
 
 class CreateCompAuthenticationsWithUploadsCommand(BaseCommand):
@@ -124,8 +160,8 @@ class CreateCompAuthenticationsWithUploadsCommand(BaseCommand):
       - logout_button: UploadFile       -> saved into file_links.logout_button (JSON)
       - user_profile: UploadFile        -> saved into file_links.user_profile (JSON)
 
-    file_links entry shape:
-      { "key": "...", "filename": "...", "content_type": "...", "size": 123 }
+    Body fields:
+      - metadata: JSON or JSON string (saved into metadata_json column)
     """
     name = "components/authentications/create_with_uploads"
     schema = CreateCompAuthenticationsPayload
@@ -223,8 +259,8 @@ class CreateCompAuthenticationsWithUploadsCommand(BaseCommand):
         # ---- upload thumbnail ----
         thumbnail_key: Optional[str] = None
         if thumbnail:
-            meta = await _upload_one(thumbnail, "thumbnail", "thumbnail", image=True)
-            thumbnail_key = meta["key"] if meta else None
+            thumb_meta = await _upload_one(thumbnail, "thumbnail", "thumbnail", image=True)
+            thumbnail_key = thumb_meta["key"] if thumb_meta else None
 
         # ---- upload images[] ----
         images_keys: Optional[List[str]] = None
@@ -261,6 +297,7 @@ class CreateCompAuthenticationsWithUploadsCommand(BaseCommand):
                 thumbnail=thumbnail_key,
                 images=images_keys,
                 file_links=file_links or None,
+                metadata_json=payload.metadata or None,
                 created_by=user_id,
                 updated_by=user_id,
                 tags=_normalize_tags(payload.tags),
@@ -318,6 +355,7 @@ class CreateCompAuthenticationsWithUploadsCommand(BaseCommand):
                 except Exception:
                     pass
 
+
 # ---------- serializer ----------
 
 def _comp_auth_to_dict(m: CompAuthentication) -> dict:
@@ -329,6 +367,7 @@ def _comp_auth_to_dict(m: CompAuthentication) -> dict:
         "images": getattr(m, "images", None),
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,
         "file_links": getattr(m, "file_links", None) or {},
+        "metadata": getattr(m, "metadata_json", None) or {},
         "tags": getattr(m, "tags", []) or [],
         "created_by": m.created_by,
         "updated_by": m.updated_by,

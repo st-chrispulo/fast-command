@@ -135,6 +135,8 @@ def _serialize_nav(row: CompNavigation, gcs) -> Dict[str, Any]:
         "template_id": str(getattr(row, "template_id")) if getattr(row, "template_id", None) else None,
         "file_links": _serialize_file_links(getattr(row, "file_links", None), gcs),
         "tags": _as_list(getattr(row, "tags", [])),
+        # NEW: expose JSONB metadata_json as metadata
+        "metadata": getattr(row, "metadata_json", None) or {},
     }
 
 

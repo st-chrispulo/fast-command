@@ -93,6 +93,8 @@ def _serialize_funnel(row: Funnel, gcs) -> Dict[str, Any]:
         "images": signed_images,
         "file": _sign_url_maybe(gcs, getattr(row, "file_link", None)),
         "tags": _as_list(getattr(row, "tags", [])),
+        # NEW: expose metadata_json as "metadata"
+        "metadata": getattr(row, "metadata_json", None) or {},
     }
 
 

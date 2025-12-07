@@ -1,10 +1,11 @@
 import os
 import re
+import json
 import mimetypes
 import time
 import asyncio
 from uuid import uuid4
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Dict, Any
 
 from fastapi import UploadFile, HTTPException
 from pydantic import BaseModel, field_validator, Field
@@ -34,16 +35,19 @@ _FALLBACK_MIME = {
     ".png": "image/png",
 }
 
+
 def _safe_stem(name: str, default_stem: str) -> str:
     stem, _ = os.path.splitext(name or "")
     stem = (stem or default_stem).strip()
     stem = _SAFE_CHARS_RE.sub("_", stem) or default_stem
     return stem
 
+
 def make_uuid_name(filename: str, default_stem: str) -> str:
     stem = _safe_stem(filename, default_stem)
     ext = (os.path.splitext(filename or "")[1] or "").lower().lstrip(".") or "bin"
     return f"{stem}.{uuid4()}.{ext}"
+
 
 def _resolve_content_type(upload: UploadFile) -> str:
     if getattr(upload, "content_type", None):
@@ -54,6 +58,7 @@ def _resolve_content_type(upload: UploadFile) -> str:
         return _FALLBACK_MIME[ext]
     guessed, _ = mimetypes.guess_type(name)
     return guessed or "application/octet-stream"
+
 
 def _normalize_tags(value) -> List[str]:
     if value is None:
@@ -70,6 +75,7 @@ def _normalize_tags(value) -> List[str]:
             seen.add(p)
             out.append(p)
     return out
+
 
 # ---------------- Payload (only editable fields) ----------------
 class UpdateCompLayoutsPayload(BaseModel):
@@ -90,6 +96,9 @@ class UpdateCompLayoutsPayload(BaseModel):
     images_clear: bool = False
     file_link_clear: bool = False
 
+    # metadata (maps to CompLayout.metadata_json / JSONB)
+    metadata: Optional[Any] = None
+
     @field_validator("name")
     @classmethod
     def _name_trim(cls, v):
@@ -107,11 +116,47 @@ class UpdateCompLayoutsPayload(BaseModel):
             return None
         return str(v).strip() or None
 
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata_in(cls, v):
+        """
+        Accept dict, None, or JSON string and normalize to dict/None.
+        Same semantics as contents/auth/layouts create commands, so multipart
+        FormData can send:
+
+            metadata = '{"layoutType":"map","outputs":[...]}'
+        """
+        # Already ok
+        if v is None or isinstance(v, dict):
+            return v
+
+        # JSON string from FormData
+        if isinstance(v, str):
+            raw = v.strip()
+            if not raw:
+                return None
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"metadata must be valid JSON if provided as string: {e}")
+
+            if isinstance(parsed, dict):
+                return parsed
+
+            # valid JSON but not an object → wrap to keep column shape consistent
+            return {"value": parsed}
+
+        # Fallback: best-effort cast to dict
+        try:
+            return dict(v)
+        except Exception:
+            raise ValueError("metadata must be a JSON object or JSON string")
+
 
 class UpdateLayoutWithUploadsCommand(BaseCommand):
     """
     Partially updates a CompLayout row:
-      - name, description, tags, thumbnail, images, file_link, updated_by
+      - name, description, tags, thumbnail, images, file_link, metadata_json, updated_by
     """
     name = "components/layouts/update_with_uploads"
     schema = UpdateCompLayoutsPayload
@@ -163,8 +208,13 @@ class UpdateLayoutWithUploadsCommand(BaseCommand):
                     pass
                 ct = _resolve_content_type(f)
                 size = len(data)
-                logger.debug("[layouts.update] _read file=%s size=%d ct=%s elapsed=%.3fs",
-                             getattr(f, "filename", None), size, ct, time.monotonic() - t0)
+                logger.debug(
+                    "[layouts.update] _read file=%s size=%d ct=%s elapsed=%.3fs",
+                    getattr(f, "filename", None),
+                    size,
+                    ct,
+                    time.monotonic() - t0,
+                )
                 if size == 0:
                     raise ValueError(f"File '{f.filename}' is empty")
                 if size > max_mb * 1024 * 1024:
@@ -181,7 +231,11 @@ class UpdateLayoutWithUploadsCommand(BaseCommand):
                 except TypeError:
                     res = await asyncio.to_thread(
                         gcs.upload_fileobj,
-                        fileobj=fileobj, filename=filename, dest_prefix=key_prefix, public=False, content_type=content_type
+                        fileobj=fileobj,
+                        filename=filename,
+                        dest_prefix=key_prefix,
+                        public=False,
+                        content_type=content_type,
                     )
                 if not res or not res.get("ok"):
                     raise RuntimeError("Upload failed")
@@ -221,6 +275,10 @@ class UpdateLayoutWithUploadsCommand(BaseCommand):
                     pass
             if payload.tags_clear or payload.tags is not None or row.tags is None:
                 row.tags = current_tags
+
+            # metadata_json (full replacement if provided)
+            if payload.metadata is not None:
+                row.metadata_json = payload.metadata or None
 
             # Thumbnail
             if payload.thumbnail_clear:
@@ -320,6 +378,7 @@ def _comp_layouts_to_dict(m: CompLayout) -> dict:
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,
         "file_link": m.file_link,
         "tags": getattr(m, "tags", []) or [],
+        "metadata": getattr(m, "metadata_json", None) or {},
         "created_by": m.created_by,
         "updated_by": m.updated_by,
         "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,

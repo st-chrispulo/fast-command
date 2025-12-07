@@ -42,12 +42,20 @@ def _apply_search(q, term: Optional[str]):
     if not term:
         return q
     like = f"%{term.strip()}%"
-    return q.filter(or_(CompAuthentication.name.ilike(like),
-                        CompAuthentication.description.ilike(like)))
+    return q.filter(
+        or_(
+            CompAuthentication.name.ilike(like),
+            CompAuthentication.description.ilike(like),
+        )
+    )
 
 
 def _apply_sort(q, sort_key: str, sort_order: str):
-    col_expr = func.lower(CompAuthentication.name) if sort_key == "name" else getattr(CompAuthentication, sort_key, CompAuthentication.created_at)
+    col_expr = (
+        func.lower(CompAuthentication.name)
+        if sort_key == "name"
+        else getattr(CompAuthentication, sort_key, CompAuthentication.created_at)
+    )
     return q.order_by(asc(col_expr) if sort_order == "asc" else desc(col_expr))
 
 
@@ -125,6 +133,8 @@ def _serialize_auth(row: CompAuthentication, gcs) -> Dict[str, Any]:
         "template_id": str(getattr(row, "template_id")) if getattr(row, "template_id", None) else None,
         "file_links": _serialize_file_links(getattr(row, "file_links", None), gcs),
         "tags": _as_list(getattr(row, "tags", [])),
+        # NEW: expose metadata_json as "metadata"
+        "metadata": getattr(row, "metadata_json", None) or {},
     }
 
 

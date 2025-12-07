@@ -5,7 +5,7 @@ import mimetypes
 import time
 import asyncio
 from uuid import uuid4
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 from fastapi import UploadFile, HTTPException
 from pydantic import BaseModel, field_validator
 from uuid import UUID
@@ -35,6 +35,7 @@ _FALLBACK_MIME = {
     ".png": "image/png",
 }
 
+
 def make_uuid_name(filename: str, default_stem: str) -> str:
     name = filename or ""
     stem, ext = os.path.splitext(name)
@@ -42,6 +43,7 @@ def make_uuid_name(filename: str, default_stem: str) -> str:
     stem = _SAFE_CHARS_RE.sub("_", stem) or default_stem
     ext = (ext or "").lower().lstrip(".") or "bin"
     return f"{stem}.{uuid4()}.{ext}"
+
 
 def _resolve_content_type(upload: UploadFile) -> str:
     if getattr(upload, "content_type", None):
@@ -52,6 +54,7 @@ def _resolve_content_type(upload: UploadFile) -> str:
         return _FALLBACK_MIME[ext]
     guessed, _ = mimetypes.guess_type(name)
     return guessed or "application/octet-stream"
+
 
 def _normalize_tags(value) -> List[str]:
     if value is None:
@@ -69,12 +72,15 @@ def _normalize_tags(value) -> List[str]:
             items.append(p)
     return items
 
+
 class CreateCompLayoutsPayload(BaseModel):
     name: str
     description: Optional[str] = None
     template_id: Optional[UUID] = None
     # tags is a single comma-separated string (e.g., "a, b, c")
     tags: Optional[str] = None
+    # metadata (backed by metadata_json JSONB column)
+    metadata: Optional[Any] = None
 
     @field_validator("name")
     @classmethod
@@ -96,12 +102,50 @@ class CreateCompLayoutsPayload(BaseModel):
             return None
         return str(v).strip()
 
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata_in(cls, v):
+        """
+        Accept dict, None, or JSON string and normalize to dict/None.
+        Same semantics as content/auth commands so multipart FormData can send:
+
+            metadata = '{"layoutType":"map","outputs":[...]}'
+        """
+        # Already correct
+        if v is None or isinstance(v, dict):
+            return v
+
+        # Most common: JSON string from FormData
+        if isinstance(v, str):
+            raw = v.strip()
+            if not raw:
+                return None
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"metadata must be valid JSON if provided as string: {e}")
+
+            if isinstance(parsed, dict):
+                return parsed
+
+            # valid JSON but not object: wrap to keep column shape consistent
+            return {"value": parsed}
+
+        # Fallback: best-effort cast to dict
+        try:
+            return dict(v)
+        except Exception:
+            raise ValueError("metadata must be a JSON object or JSON string")
+
+
 class CreateCompLayoutsWithUploadsCommand(BaseCommand):
     """
     Creates a CompLayout with optional uploads:
       - thumbnail: UploadFile (single)
       - images: List[UploadFile]
       - attachment: UploadFile -> stored as file_link
+
+    Also stores optional metadata -> metadata_json (JSONB).
     """
     name = "components/layouts/create_with_uploads"
     schema = CreateCompLayoutsPayload
@@ -201,6 +245,7 @@ class CreateCompLayoutsWithUploadsCommand(BaseCommand):
                 created_by=user_id,
                 updated_by=user_id,
                 tags=_normalize_tags(payload.tags),
+                metadata_json=payload.metadata or None,
             )
 
             db.add(row)
@@ -253,6 +298,7 @@ class CreateCompLayoutsWithUploadsCommand(BaseCommand):
                 except Exception:
                     pass
 
+
 def _comp_layouts_to_dict(m: CompLayout) -> dict:
     return {
         "id": str(m.id) if getattr(m, "id", None) is not None else None,
@@ -263,6 +309,7 @@ def _comp_layouts_to_dict(m: CompLayout) -> dict:
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,
         "file_link": m.file_link,
         "tags": getattr(m, "tags", []) or [],
+        "metadata": getattr(m, "metadata_json", None) or {},
         "created_by": m.created_by,
         "updated_by": m.updated_by,
         "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,

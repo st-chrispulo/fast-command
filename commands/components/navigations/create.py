@@ -2,6 +2,7 @@
 
 import os
 import re
+import json
 import mimetypes
 import time
 import asyncio
@@ -93,6 +94,8 @@ class CreateCompNavigationsPayload(BaseModel):
     description: Optional[str] = None
     template_id: Optional[UUID] = None
     tags: Optional[str] = None  # comma-separated
+    # metadata (JSONB -> metadata_json)
+    metadata: Optional[Any] = None
 
     @field_validator("name")
     @classmethod
@@ -114,6 +117,41 @@ class CreateCompNavigationsPayload(BaseModel):
             return None
         return str(v).strip()
 
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata_in(cls, v):
+        """
+        Accept dict, None, or JSON string and normalize to dict/None.
+        Same semantics as contents/layouts/pages/auth commands, so you can send:
+
+            metadata = '{"layoutType":"nav","outputs":[...]}'
+        """
+        # Already dict / None
+        if v is None or isinstance(v, dict):
+            return v
+
+        # JSON string from FormData
+        if isinstance(v, str):
+            raw = v.strip()
+            if not raw:
+                return None
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"metadata must be valid JSON if provided as string: {e}")
+
+            if isinstance(parsed, dict):
+                return parsed
+
+            # valid JSON but not an object → wrap
+            return {"value": parsed}
+
+        # Fallback: best-effort cast to dict
+        try:
+            return dict(v)
+        except Exception:
+            raise ValueError("metadata must be a JSON object or JSON string")
+
 
 # ---------- command ----------
 
@@ -130,6 +168,8 @@ class CreateCompNavigationsWithUploadsCommand(BaseCommand):
 
     file_links entry shape:
       { "key": "...", "filename": "...", "content_type": "...", "size": 123 }
+
+    Also stores optional metadata -> metadata_json (JSONB).
     """
     name = "components/navigations/create_with_uploads"
     schema = CreateCompNavigationsPayload
@@ -265,6 +305,7 @@ class CreateCompNavigationsWithUploadsCommand(BaseCommand):
                 created_by=user_id,
                 updated_by=user_id,
                 tags=_normalize_tags(payload.tags),
+                metadata_json=payload.metadata or None,
             )
 
             db.add(row)
@@ -320,7 +361,6 @@ class CreateCompNavigationsWithUploadsCommand(BaseCommand):
                     pass
 
 
-
 def _comp_nav_to_dict(m: CompNavigation) -> dict:
     return {
         "id": str(m.id) if getattr(m, "id", None) is not None else None,
@@ -331,6 +371,7 @@ def _comp_nav_to_dict(m: CompNavigation) -> dict:
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,
         "file_links": getattr(m, "file_links", None) or {},
         "tags": getattr(m, "tags", []) or [],
+        "metadata": getattr(m, "metadata_json", None) or {},
         "created_by": m.created_by,
         "updated_by": m.updated_by,
         "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,

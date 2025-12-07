@@ -16,6 +16,7 @@ tbl_users = Table(
     extend_existing=True,
 )
 
+
 class Funnel(Base):
     __tablename__ = "tbl_funnels"
 
@@ -41,6 +42,10 @@ class Funnel(Base):
 
     thumbnail = Column(Text, nullable=True)
     images = Column(JSONB, nullable=True)
+
+    # NEW: metadata JSONB column (DB name "metadata", attribute name metadata_json)
+    metadata_json = Column("metadata", JSONB, nullable=True)
+
     template_id = Column(UUID(as_uuid=True), nullable=True)
     file_link = Column(Text, nullable=True)
 
@@ -65,6 +70,12 @@ class Funnel(Base):
         Index("idx_tbl_funnels_created_by", "created_by"),
         Index("idx_tbl_funnels_updated_by", "updated_by"),
         Index("idx_tbl_funnels_tags_gin", "tags", postgresql_using="gin"),
+        Index(
+            "idx_tbl_funnels_metadata_gin",
+            "metadata",
+            postgresql_using="gin",
+        ),
     )
+
 
 __all__ = ["Funnel"]

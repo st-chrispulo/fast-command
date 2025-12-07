@@ -2,6 +2,7 @@
 
 import os
 import re
+import json
 import mimetypes
 import time
 import asyncio
@@ -112,6 +113,10 @@ class UpdateCompNavigationsPayload(BaseModel):
     side_clear: bool = False
     bottom_clear: bool = False
 
+    # NEW: metadata controls (JSONB metadata_json)
+    metadata: Optional[Any] = None   # accepts dict or JSON string
+    metadata_clear: bool = False                # clear metadata_json when True
+
     @field_validator("name")
     @classmethod
     def _name_trim(cls, v):
@@ -129,13 +134,46 @@ class UpdateCompNavigationsPayload(BaseModel):
             return None
         return str(v).strip() or None
 
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata_in(cls, v):
+        """
+        Accept dict, None, or JSON string and normalize to dict/None.
+        Same semantics as other *_with_uploads commands.
+        """
+        # Already dict / None
+        if v is None or isinstance(v, dict):
+            return v
+
+        # JSON string from multipart/form-data
+        if isinstance(v, str):
+            raw = v.strip()
+            if not raw:
+                return None
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"metadata must be valid JSON if provided as string: {e}")
+
+            if isinstance(parsed, dict):
+                return parsed
+
+            # Valid JSON but not an object → wrap
+            return {"value": parsed}
+
+        # Fallback: best-effort cast to dict
+        try:
+            return dict(v)
+        except Exception:
+            raise ValueError("metadata must be a JSON object or JSON string")
+
 
 # ---------------- Command ----------------
 
 class UpdateNavigationsWithUploadsCommand(BaseCommand):
     """
     Partially updates a CompNavigation row:
-      - name, description, template_id, tags, thumbnail, images, file_links, updated_by
+      - name, description, template_id, tags, metadata_json, thumbnail, images, file_links, updated_by
 
     File uploads (multipart/form-data):
       - thumbnail: UploadFile (single)  -> stored as GCS key in 'thumbnail'
@@ -284,6 +322,13 @@ class UpdateNavigationsWithUploadsCommand(BaseCommand):
 
             if payload.tags_clear or payload.tags is not None or row.tags is None:
                 row.tags = current_tags
+
+            # ------------ metadata_json ------------
+            if payload.metadata_clear:
+                row.metadata_json = None
+            elif payload.metadata is not None:
+                # fully replace when provided
+                row.metadata_json = payload.metadata or None
 
             # ------------ thumbnail (key) ------------
             if payload.thumbnail_clear:
@@ -445,6 +490,7 @@ def _comp_nav_to_dict(m: CompNavigation) -> dict:
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,
         "file_links": getattr(m, "file_links", None) or {},
         "tags": getattr(m, "tags", []) or [],
+        "metadata": getattr(m, "metadata_json", None) or {},
         "created_by": m.created_by,
         "updated_by": m.updated_by,
         "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,

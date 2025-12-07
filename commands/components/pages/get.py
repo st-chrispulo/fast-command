@@ -20,6 +20,8 @@ class PageListQuery(BaseModel):
     current_page: Optional[int] = Field(default=1, ge=1, description="1-based page")
     limit: Optional[int]         = Field(default=10, ge=1, le=100, description="page size (<=100)")
     tags: Optional[str] = Field(default=None, description="Comma-separated tag names to filter by (ANY match)")
+    # OPTIONAL: filter by specific page id
+    id: Optional[str] = Field(default=None, description="Filter by specific page id")
 
     ALLOWED_SORT_KEYS: ClassVar[Set[str]] = {"id", "name", "created_at", "updated_at"}
 
@@ -40,12 +42,20 @@ def _apply_search(q, term: Optional[str]):
     if not term:
         return q
     like = f"%{term.strip()}%"
-    return q.filter(or_(CompPage.name.ilike(like),
-                        CompPage.description.ilike(like)))
+    return q.filter(
+        or_(
+            CompPage.name.ilike(like),
+            CompPage.description.ilike(like),
+        )
+    )
 
 
 def _apply_sort(q, sort_key: str, sort_order: str):
-    col_expr = func.lower(CompPage.name) if sort_key == "name" else getattr(CompPage, sort_key, CompPage.created_at)
+    col_expr = (
+        func.lower(CompPage.name)
+        if sort_key == "name"
+        else getattr(CompPage, sort_key, CompPage.created_at)
+    )
     return q.order_by(asc(col_expr) if sort_order == "asc" else desc(col_expr))
 
 
@@ -66,18 +76,23 @@ def _as_list(val) -> List[Any]:
     return list(val or [])
 
 
-def _sign_url_maybe(gcs, url: Optional[str]) -> Optional[str]:
-    if not url:
-        return url
+def _sign_url_maybe(gcs, url_or_key: Optional[str]) -> Optional[str]:
+    """
+    Treat the stored string as a GCS key and attempt to sign it.
+    If signing fails, just return the original value.
+    """
+    if not url_or_key:
+        return url_or_key
     try:
-        return gcs.signed_get_url(url, expires_seconds=3600)
+        return gcs.signed_get_url(url_or_key, expires_seconds=3600)
     except Exception:
-        return url
+        return url_or_key
 
 
 def _serialize_page(row: CompPage, gcs) -> Dict[str, Any]:
     images = _as_list(getattr(row, "images", []))
     signed_images = [_sign_url_maybe(gcs, img) for img in images]
+
     return {
         "id": str(getattr(row, "id", "")),
         "name": getattr(row, "name", None),
@@ -89,6 +104,8 @@ def _serialize_page(row: CompPage, gcs) -> Dict[str, Any]:
         "images": signed_images,
         "file": _sign_url_maybe(gcs, getattr(row, "file_link", None)),
         "tags": _as_list(getattr(row, "tags", [])),
+        # NEW: surface metadata_json as `metadata`
+        "metadata": getattr(row, "metadata_json", None) or {},
     }
 
 
@@ -134,8 +151,14 @@ class PageGetCommand(BaseCommand):
             try:
                 q = session.query(CompPage).filter(CompPage.created_by == user_id)
 
+                # Optional filter by specific page id
+                if payload.id:
+                    q = q.filter(CompPage.id == payload.id)
+
+                # Search
                 q = _apply_search(q, payload.search_term)
 
+                # Tags filter (ANY overlap) with proper Postgres text[] typing
                 raw_tags = payload.tags or ""
                 tags_list = [t.strip() for t in raw_tags.split(",") if t.strip()]
                 if tags_list:
@@ -143,13 +166,16 @@ class PageGetCommand(BaseCommand):
                     q = q.filter(CompPage.tags.op("&&")(typed_array))
                     # or: q = q.filter(CompPage.tags.overlap(typed_array))
 
+                # Sort & paginate
                 q = _apply_sort(q, payload.sort_key, payload.sort_order)
                 items, total = _paginate(q, current_page, limit)
                 resp["total_items"] = total
 
+                # Serialize pages
                 gcs = get_gcs()
                 resp["data"] = [_serialize_page(row, gcs) for row in items]
 
+                # Tagging block (per-user tags)
                 try:
                     uid = int(user_id)
                 except (TypeError, ValueError):
