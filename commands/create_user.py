@@ -1,10 +1,15 @@
 from commands.base_command import BaseCommand
 from auth.db import SessionLocal
-from passlib.hash import bcrypt
+from passlib.context import CryptContext
 from fastapi import HTTPException
 from sqlalchemy import text
 from pydantic import BaseModel, EmailStr, field_validator
 
+# use bcrypt_sha256 for new hashes, but still verify legacy bcrypt if needed
+pwd_context = CryptContext(
+    schemes=["bcrypt_sha256", "bcrypt"],
+    deprecated="auto",
+)
 
 class CreateUserPayload(BaseModel):
     email: str
@@ -37,7 +42,7 @@ class CreateUserPayload(BaseModel):
     @field_validator("password")
     @classmethod
     def validate_password(cls, v: str) -> str:
-        v = v.strip()
+        # Do NOT strip() passwords — user input should be preserved exactly
         if not v:
             raise ValueError("Password must not be empty")
         if len(v) < 6:
@@ -53,6 +58,7 @@ class CreateUserCommand(BaseCommand):
     def run(self, payload: CreateUserPayload):
         db = SessionLocal()
         try:
+            # Check if email already exists
             existing = db.execute(
                 text("SELECT 1 FROM tbl_users WHERE email = :email"),
                 {"email": payload.email}
@@ -61,21 +67,22 @@ class CreateUserCommand(BaseCommand):
             if existing:
                 raise HTTPException(status_code=400, detail="Email already registered")
 
-            hashed_pw = bcrypt.hash(payload.password)
+            # Hash password using bcrypt_sha256 (safe beyond 72 bytes)
+            hashed_pw = pwd_context.hash(payload.password)
 
             db.execute(
                 text("""
-                    INSERT INTO tbl_users (email, username, password_hash)
-                    VALUES (:email, :username, :password_hash)
+                    INSERT INTO tbl_users (email, username, password)
+                    VALUES (:email, :username, :password)
                 """),
                 {
                     "email": payload.email,
                     "username": payload.username,
-                    "password_hash": hashed_pw
+                    "password": hashed_pw
                 }
             )
             db.commit()
+
             return {"status": "User created successfully"}
         finally:
             db.close()
-
