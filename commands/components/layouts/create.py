@@ -1,3 +1,4 @@
+# commands/components/layout/create_with_uploads.py
 import os
 import re
 import json
@@ -5,10 +6,11 @@ import mimetypes
 import time
 import asyncio
 from uuid import uuid4
-from typing import Optional, List, Any, Dict
+from typing import Optional, List, Any
+from uuid import UUID
+
 from fastapi import UploadFile, HTTPException
 from pydantic import BaseModel, field_validator
-from uuid import UUID
 
 from commands.base_command import BaseCommand
 from auth.db import SessionLocal
@@ -20,6 +22,7 @@ try:
     from logger import logger
 except Exception:
     import logging as _logging
+
     logger = _logging.getLogger("layouts_create_with_uploads")
     if not logger.handlers:
         handler = _logging.StreamHandler()
@@ -77,9 +80,12 @@ class CreateCompLayoutsPayload(BaseModel):
     name: str
     description: Optional[str] = None
     template_id: Optional[UUID] = None
-    # tags is a single comma-separated string (e.g., "a, b, c")
+
+    # ✅ NEW
+    group_id: Optional[UUID] = None
+    sub_type: Optional[str] = None
+
     tags: Optional[str] = None
-    # metadata (backed by metadata_json JSONB column)
     metadata: Optional[Any] = None
 
     @field_validator("name")
@@ -95,27 +101,42 @@ class CreateCompLayoutsPayload(BaseModel):
     def _strip_optional(cls, v):
         return v.strip() if isinstance(v, str) else v
 
+    @field_validator("sub_type", mode="before")
+    @classmethod
+    def _sub_type_in(cls, v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
+
     @field_validator("tags", mode="before")
     @classmethod
     def _tags_in(cls, v):
         if v is None:
             return None
-        return str(v).strip()
+        s = str(v).strip()
+        return s or None
+
+    # ✅ important for multipart/form-data: "" -> None for UUID fields
+    @field_validator("template_id", "group_id", mode="before")
+    @classmethod
+    def _uuid_empty_to_none(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     @field_validator("metadata", mode="before")
     @classmethod
     def _metadata_in(cls, v):
         """
         Accept dict, None, or JSON string and normalize to dict/None.
-        Same semantics as content/auth commands so multipart FormData can send:
-
-            metadata = '{"layoutType":"map","outputs":[...]}'
+        Same semantics as content/auth commands so multipart FormData can send JSON.
         """
-        # Already correct
         if v is None or isinstance(v, dict):
             return v
 
-        # Most common: JSON string from FormData
         if isinstance(v, str):
             raw = v.strip()
             if not raw:
@@ -128,10 +149,8 @@ class CreateCompLayoutsPayload(BaseModel):
             if isinstance(parsed, dict):
                 return parsed
 
-            # valid JSON but not object: wrap to keep column shape consistent
             return {"value": parsed}
 
-        # Fallback: best-effort cast to dict
         try:
             return dict(v)
         except Exception:
@@ -144,8 +163,6 @@ class CreateCompLayoutsWithUploadsCommand(BaseCommand):
       - thumbnail: UploadFile (single)
       - images: List[UploadFile]
       - attachment: UploadFile -> stored as file_link
-
-    Also stores optional metadata -> metadata_json (JSONB).
     """
     name = "components/layouts/create_with_uploads"
     schema = CreateCompLayoutsPayload
@@ -174,12 +191,19 @@ class CreateCompLayoutsWithUploadsCommand(BaseCommand):
         attachment: Optional[UploadFile] = None,
         user_id: Optional[str] = None,
     ):
-        t0 = time.monotonic()
-        logger.info("[layouts] start name=%s user_id=%s", getattr(payload, "name", None), user_id)
+        start_t = time.monotonic()
+        logger.info(
+            "[layouts] start name=%s user_id=%s group_id=%s sub_type=%s",
+            getattr(payload, "name", None),
+            user_id,
+            getattr(payload, "group_id", None),
+            getattr(payload, "sub_type", None),
+        )
+
         gcs = get_gcs()
 
-        layout_id = str(uuid4())
-        dest_prefix = f"{self.base_folder}/{layout_id}"
+        layout_folder_id = str(uuid4())
+        dest_prefix = f"{self.base_folder}/{layout_folder_id}"
 
         thumbnail_key: Optional[str] = None
         images_keys: Optional[List[str]] = None
@@ -235,6 +259,16 @@ class CreateCompLayoutsWithUploadsCommand(BaseCommand):
             if self.require_auth and not user_id:
                 raise HTTPException(status_code=401, detail="Unauthorized (no user context).")
 
+            # ✅ created_by/updated_by are Integer columns
+            created_by = None
+            updated_by = None
+            if user_id is not None:
+                try:
+                    created_by = int(user_id)
+                    updated_by = int(user_id)
+                except Exception:
+                    raise HTTPException(status_code=400, detail="Invalid user context (user_id must be int-like).")
+
             row = CompLayout(
                 name=payload.name,
                 description=payload.description,
@@ -242,10 +276,14 @@ class CreateCompLayoutsWithUploadsCommand(BaseCommand):
                 images=images_keys,
                 template_id=payload.template_id,
                 file_link=attachment_key,
-                created_by=user_id,
-                updated_by=user_id,
+                created_by=created_by,
+                updated_by=updated_by,
                 tags=_normalize_tags(payload.tags),
                 metadata_json=payload.metadata or None,
+
+                # ✅ NEW
+                group_id=payload.group_id,
+                sub_type=payload.sub_type,
             )
 
             db.add(row)
@@ -275,6 +313,8 @@ class CreateCompLayoutsWithUploadsCommand(BaseCommand):
             except Exception:
                 pass
 
+            logger.info("[layouts] finished total_elapsed=%.3fs id=%s", time.monotonic() - start_t, getattr(row, "id", None))
+
             return {
                 "status": "ok",
                 "data": _comp_layouts_to_dict(row),
@@ -282,7 +322,7 @@ class CreateCompLayoutsWithUploadsCommand(BaseCommand):
                     "thumbnail": signed_thumb,
                     "images": signed_imgs,
                     "attachment": signed_attach,
-                    "layout_id": layout_id,
+                    "layout_id": layout_folder_id,
                 },
             }
         except Exception:
@@ -304,6 +344,11 @@ def _comp_layouts_to_dict(m: CompLayout) -> dict:
         "id": str(m.id) if getattr(m, "id", None) is not None else None,
         "name": m.name,
         "description": m.description,
+
+        # ✅ NEW
+        "group_id": str(getattr(m, "group_id", None)) if getattr(m, "group_id", None) else None,
+        "sub_type": getattr(m, "sub_type", None),
+
         "thumbnail": m.thumbnail,
         "images": m.images,
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,

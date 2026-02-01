@@ -52,3 +52,8 @@ from .projects.create import CreateProjectWithUploadsCommand
 from .projects.update import UpdateProjectWithUploadsCommand
 from .projects.get import ProjectGetCommand
 from .projects.delete import DeleteProjectsCommand
+
+from .components.connections.create import CreateCompConnectionsCommand
+from .components.connections.delete import DeleteCompConnectionsCommand
+from .components.connections.get import ConnectionsGetCommand
+from .components.connections.preview import CompConnectionPreview

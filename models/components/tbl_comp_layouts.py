@@ -1,11 +1,9 @@
-from sqlalchemy import (
-    Column, String, Text, DateTime, Integer, ForeignKey, Index, func, Table
-)
+# models/components/tbl_comp_layouts.py
+
+from sqlalchemy import Column, String, Text, DateTime, Integer, ForeignKey, Index, func, Table
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 
-# If you already have a central Base, import it instead:
-# from models.base import Base
 Base = declarative_base()
 
 # Minimal FK stub so create_all() resolves tbl_users
@@ -16,6 +14,7 @@ tbl_users = Table(
     extend_existing=True,
 )
 
+
 class CompLayout(Base):
     __tablename__ = "tbl_comp_layouts"
 
@@ -25,6 +24,7 @@ class CompLayout(Base):
         server_default=func.gen_random_uuid(),
         nullable=False,
     )
+
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
 
@@ -42,19 +42,19 @@ class CompLayout(Base):
     thumbnail = Column(Text, nullable=True)
     images = Column(JSONB, nullable=True)
 
-    # NEW: metadata JSONB column (DB name "metadata", attribute name metadata_json)
+    # DB column name is "metadata", python attribute is metadata_json
     metadata_json = Column("metadata", JSONB, nullable=True)
 
     template_id = Column(UUID(as_uuid=True), nullable=True)
     file_link = Column(Text, nullable=True)
 
-    tags = Column(ARRAY(String), nullable=False, server_default='{}')
+    # ✅ NEW FIELDS
+    group_id = Column(UUID(as_uuid=True), nullable=True)
+    sub_type = Column(String(255), nullable=True)
 
-    created_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
+    tags = Column(ARRAY(String), nullable=False, server_default="{}")
+
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -69,8 +69,11 @@ class CompLayout(Base):
         Index("idx_tbl_comp_layouts_created_by", "created_by"),
         Index("idx_tbl_comp_layouts_updated_by", "updated_by"),
         Index("idx_tbl_comp_layouts_tags_gin", "tags", postgresql_using="gin"),
-        # Optional if you decide to add a GIN index for metadata:
-        # Index("idx_tbl_comp_layouts_metadata_gin", "metadata", postgresql_using="gin"),
+
+        # ✅ NEW INDEXES (match migration 046)
+        Index("idx_tbl_comp_layouts_group_id", "group_id"),
+        Index("idx_tbl_comp_layouts_sub_type", "sub_type"),
     )
+
 
 __all__ = ["CompLayout"]

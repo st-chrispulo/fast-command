@@ -287,6 +287,21 @@ class GCS:
             logger.exception("GCS.upload_fileobj failed for key=%s: %s", key, e)
             raise
 
+    def read_text(self, key: str, encoding: str = "utf-8") -> str:
+        """
+        Read a GCS object as text using server-side credentials.
+        key is the object key inside the bucket (e.g. 'uploads/.../file.js')
+        """
+        k = str(key).lstrip("/")
+        blob = self.bucket.blob(k)
+        data = blob.download_as_bytes()
+        try:
+            return data.decode(encoding)
+        except Exception:
+            # fallback
+            return data.decode("utf-8", errors="replace")
+
+
 # convenience accessor
 def get_gcs() -> GCS:
     return GCS.instance()

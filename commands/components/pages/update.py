@@ -1,3 +1,4 @@
+# commands/components/page/update.py
 import os
 import re
 import json
@@ -5,7 +6,8 @@ import mimetypes
 import time
 import asyncio
 from uuid import uuid4
-from typing import Optional, List, Literal, Dict, Any
+from typing import Optional, List, Literal, Any
+from uuid import UUID
 
 from fastapi import UploadFile, HTTPException
 from pydantic import BaseModel, field_validator, Field
@@ -83,6 +85,10 @@ class UpdateCompPagesPayload(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
 
+    # ✅ NEW editable fields
+    group_id: Optional[UUID] = None
+    sub_type: Optional[str] = None
+
     tags: Optional[str] = None
     tags_mode: Literal["append", "replace", "remove"] = Field(default="replace")
     tags_clear: bool = False
@@ -93,7 +99,6 @@ class UpdateCompPagesPayload(BaseModel):
     images_clear: bool = False
     file_link_clear: bool = False
 
-    # NEW: metadata (maps to CompPage.metadata_json / JSONB)
     metadata: Optional[Any] = None
 
     @field_validator("name")
@@ -105,6 +110,24 @@ class UpdateCompPagesPayload(BaseModel):
     @classmethod
     def _desc_trim(cls, v):
         return v.strip() if isinstance(v, str) else v
+
+    @field_validator("sub_type", mode="before")
+    @classmethod
+    def _sub_type_in(cls, v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
+
+    # ✅ multipart-safe: allow "" -> None for UUID
+    @field_validator("group_id", mode="before")
+    @classmethod
+    def _uuid_empty_to_none(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     @field_validator("tags", mode="before")
     @classmethod
@@ -120,11 +143,9 @@ class UpdateCompPagesPayload(BaseModel):
         Accept dict, None, or JSON string and normalize to dict/None.
         Same semantics as contents/layouts/auth/page create commands.
         """
-        # Already correct
         if v is None or isinstance(v, dict):
             return v
 
-        # JSON string from multipart/form-data
         if isinstance(v, str):
             raw = v.strip()
             if not raw:
@@ -137,10 +158,8 @@ class UpdateCompPagesPayload(BaseModel):
             if isinstance(parsed, dict):
                 return parsed
 
-            # Valid JSON but not object → wrap
             return {"value": parsed}
 
-        # Fallback: best-effort cast to dict
         try:
             return dict(v)
         except Exception:
@@ -150,10 +169,9 @@ class UpdateCompPagesPayload(BaseModel):
 class UpdatePageWithUploadsCommand(BaseCommand):
     """
     Partially updates a CompPage row:
-      - name, description, tags, thumbnail, images, file_link, metadata_json, updated_by
+      - name, description, group_id, sub_type, tags, thumbnail, images, file_link, metadata_json, updated_by
 
-    NOTE: We store the raw GCS keys in the DB and return signed URLs
-    in the `gcs` block of the response for convenience.
+    NOTE: stores raw GCS keys in DB and returns signed URLs in the `gcs` block.
     """
     name = "components/pages/update_with_uploads"
     schema = UpdateCompPagesPayload
@@ -183,7 +201,13 @@ class UpdatePageWithUploadsCommand(BaseCommand):
         user_id: Optional[str] = None,
     ):
         start_t = time.monotonic()
-        logger.info("[pages.update] start id=%s user_id=%s", payload.id, user_id)
+        logger.info(
+            "[pages.update] start id=%s user_id=%s group_id=%s sub_type=%s",
+            payload.id,
+            user_id,
+            getattr(payload, "group_id", None),
+            getattr(payload, "sub_type", None),
+        )
 
         if self.require_auth and not user_id:
             raise HTTPException(status_code=401, detail="Unauthorized (no user context).")
@@ -221,7 +245,6 @@ class UpdatePageWithUploadsCommand(BaseCommand):
                 return data, ct
 
             async def _upload_and_return_key(fileobj, filename: str, key_prefix: str, content_type: str) -> str:
-                # Try positional signature first; fallback to kwargs
                 try:
                     res = await asyncio.to_thread(
                         gcs.upload_fileobj,
@@ -244,7 +267,6 @@ class UpdatePageWithUploadsCommand(BaseCommand):
                 if not res or not res.get("ok"):
                     raise RuntimeError("Upload failed")
 
-                # IMPORTANT: store the GCS key, not a URL
                 return res["key"]
 
             # -------- scalar fields --------
@@ -253,7 +275,13 @@ class UpdatePageWithUploadsCommand(BaseCommand):
             if payload.description is not None:
                 row.description = payload.description
 
-            # -------- tags (append/replace/remove/clear) --------
+            # ✅ NEW: group_id / sub_type (partial update; allow explicit clear)
+            if payload.group_id is not None or ("group_id" in getattr(payload, "__pydantic_fields_set__", set())):
+                row.group_id = payload.group_id
+            if payload.sub_type is not None or ("sub_type" in getattr(payload, "__pydantic_fields_set__", set())):
+                row.sub_type = payload.sub_type
+
+            # -------- tags --------
             current_tags: List[str] = list(row.tags or [])
             if payload.tags_clear:
                 current_tags = []
@@ -273,19 +301,17 @@ class UpdatePageWithUploadsCommand(BaseCommand):
                     remove_set = set(incoming)
                     current_tags = [t for t in current_tags if t not in remove_set]
             else:
-                # If tags_mode=replace AND user sent empty string and not tags_clear,
-                # interpret as "no-op" (do not wipe). Leave as-is unless tags_clear was set.
                 if payload.tags_mode == "replace" and not payload.tags_clear:
                     pass
 
             if payload.tags_clear or payload.tags is not None or row.tags is None:
                 row.tags = current_tags
 
-            # -------- metadata_json (full replacement if provided) --------
+            # -------- metadata_json --------
             if payload.metadata is not None:
                 row.metadata_json = payload.metadata or None
 
-            # -------- thumbnail (file_link stored as key) --------
+            # -------- thumbnail --------
             if payload.thumbnail_clear:
                 row.thumbnail = None
 
@@ -300,7 +326,7 @@ class UpdatePageWithUploadsCommand(BaseCommand):
                 )
                 row.thumbnail = thumb_key
 
-            # -------- images (append/replace/clear) --------
+            # -------- images --------
             current_images: List[str] = list(row.images or [])
 
             if payload.images_clear:
@@ -323,12 +349,17 @@ class UpdatePageWithUploadsCommand(BaseCommand):
                 if payload.images_mode == "replace":
                     current_images = new_image_keys
                 else:
-                    current_images.extend(new_image_keys)
+                    # append + de-dupe
+                    seen = set(current_images)
+                    for k in new_image_keys:
+                        if k not in seen:
+                            current_images.append(k)
+                            seen.add(k)
 
             if payload.images_clear or new_image_keys or (row.images is None):
                 row.images = current_images
 
-            # -------- main file_link (stored as key) --------
+            # -------- main file_link --------
             if payload.file_link_clear:
                 row.file_link = None
 
@@ -343,7 +374,11 @@ class UpdatePageWithUploadsCommand(BaseCommand):
                 )
                 row.file_link = att_key
 
-            row.updated_by = user_id
+            # ✅ updated_by is Integer
+            try:
+                row.updated_by = int(user_id)
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid user context (user_id must be int-like).")
 
             # -------- persist --------
             t0 = time.monotonic()
@@ -387,8 +422,7 @@ class UpdatePageWithUploadsCommand(BaseCommand):
                 except Exception:
                     signed_file = None
 
-            elapsed_total = time.monotonic() - start_t
-            logger.info("[pages.update] finished total_elapsed=%.3fs id=%s", elapsed_total, row.id)
+            logger.info("[pages.update] finished total_elapsed=%.3fs id=%s", time.monotonic() - start_t, row.id)
 
             return {
                 "status": "ok",
@@ -433,6 +467,11 @@ def _comp_pages_to_dict(m: CompPage) -> dict:
         "id": str(m.id) if getattr(m, "id", None) is not None else None,
         "name": m.name,
         "description": m.description,
+
+        # ✅ NEW
+        "group_id": str(getattr(m, "group_id", None)) if getattr(m, "group_id", None) else None,
+        "sub_type": getattr(m, "sub_type", None),
+
         "thumbnail": m.thumbnail,
         "images": m.images,
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,

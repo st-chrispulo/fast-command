@@ -10,7 +10,8 @@ from commands import SayHelloCommand, LoginCommand, CreateUserCommand, LogoutCom
     CreateCompNavigationsWithUploadsCommand, UpdateNavigationsWithUploadsCommand, DeleteCompNavigationCommand, \
     NavigationGetCommand, CreateFunnelWithUploadsCommand, UpdateFunnelWithUploadsCommand, DeleteFunnelsCommand, \
     FunnelGetCommand, CreateProjectWithUploadsCommand, UpdateProjectWithUploadsCommand, ProjectGetCommand, \
-    DeleteProjectsCommand
+    DeleteProjectsCommand, CreateCompConnectionsCommand, DeleteCompConnectionsCommand, ConnectionsGetCommand, \
+    CompConnectionPreview
 
 command_registry = [
     CreateUserCommand(),
@@ -60,4 +61,8 @@ command_registry = [
     UpdateProjectWithUploadsCommand(),
     ProjectGetCommand(),
     DeleteProjectsCommand(),
+    CreateCompConnectionsCommand(),
+    DeleteCompConnectionsCommand(),
+    ConnectionsGetCommand(),
+    CompConnectionPreview()
 ]

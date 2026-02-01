@@ -8,9 +8,10 @@ import asyncio
 import json
 from uuid import uuid4
 from typing import Optional, List, Any, Dict
+from uuid import UUID as PyUUID
+
 from fastapi import UploadFile, HTTPException
 from pydantic import BaseModel, field_validator
-from uuid import UUID
 
 from commands.base_command import BaseCommand
 from auth.db import SessionLocal
@@ -47,7 +48,6 @@ _FALLBACK_MIME = {
 MAX_IMAGE_MB = 50
 MAX_FILE_MB = 200
 IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
-ANY_FILE_TYPES = None  # allow any (validate size only)
 
 
 def make_uuid_name(filename: str, default_stem: str) -> str:
@@ -92,10 +92,14 @@ def _normalize_tags(value) -> List[str]:
 class CreateCompAuthenticationsPayload(BaseModel):
     name: str
     description: Optional[str] = None
-    template_id: Optional[UUID] = None
+    template_id: Optional[PyUUID] = None
+
+    # NEW
+    group_id: Optional[PyUUID] = None
+    sub_type: Optional[str] = None
+
     tags: Optional[str] = None  # comma-separated
-    # metadata_json that maps to CompAuthentication.metadata_json
-    # Can be sent as JSON or as a JSON string in the multipart body
+    # maps to CompAuthentication.metadata_json (DB column name "metadata")
     metadata: Optional[Any] = None
 
     @field_validator("name")
@@ -118,12 +122,19 @@ class CreateCompAuthenticationsPayload(BaseModel):
             return None
         return str(v).strip()
 
+    @field_validator("sub_type", mode="before")
+    @classmethod
+    def _sub_type_in(cls, v):
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
+
     @field_validator("metadata", mode="before")
     @classmethod
     def _metadata_in(cls, v):
         """
         Accept dict, None, or JSON string and normalize to dict/None.
-        Same semantics as other *_with_uploads commands.
         """
         if v is None or isinstance(v, dict):
             return v
@@ -135,11 +146,9 @@ class CreateCompAuthenticationsPayload(BaseModel):
                 parsed = json.loads(v)
                 if isinstance(parsed, dict):
                     return parsed
-                # If JSON is valid but not an object, wrap
                 return {"value": parsed}
             except Exception as e:
                 raise ValueError(f"metadata must be valid JSON if provided as string: {e}")
-        # Fallback: best-effort cast to dict
         try:
             return dict(v)
         except Exception:
@@ -153,14 +162,13 @@ class CreateCompAuthenticationsWithUploadsCommand(BaseCommand):
     Creates a CompAuthentication with optional uploads:
 
     Files (multipart/form-data):
-      - thumbnail: UploadFile (single)  -> saved to 'thumbnail' (TEXT key)
-      - images: List[UploadFile]        -> saved to 'images' (JSONB array of keys)
-      - login: UploadFile               -> saved into file_links.login (JSON)
-      - register: UploadFile            -> saved into file_links.register (JSON)
-      - logout_button: UploadFile       -> saved into file_links.logout_button (JSON)
-      - user_profile: UploadFile        -> saved into file_links.user_profile (JSON)
+      - thumbnail: UploadFile (single) -> saved to 'thumbnail' (TEXT key)
+      - images: List[UploadFile]       -> saved to 'images' (JSONB array of keys)
+      - file: UploadFile (single)      -> saved to 'file_link' (TEXT key)  <-- NEW SINGLE FILE
 
     Body fields:
+      - group_id (uuid)
+      - sub_type (string)
       - metadata: JSON or JSON string (saved into metadata_json column)
     """
     name = "components/authentications/create_with_uploads"
@@ -172,12 +180,9 @@ class CreateCompAuthenticationsWithUploadsCommand(BaseCommand):
 
     # Swagger/OpenAPI exposure
     file_fields = [
-        ("thumbnail", False),      # single image
-        ("images", True),          # multiple images
-        ("login", False),
-        ("register", False),
-        ("logout_button", False),
-        ("user_profile", False),
+        ("thumbnail", False),
+        ("images", True),
+        ("file", False),  # NEW: single file_link upload
     ]
 
     base_folder = "uploads"
@@ -187,10 +192,7 @@ class CreateCompAuthenticationsWithUploadsCommand(BaseCommand):
         payload: CreateCompAuthenticationsPayload,
         thumbnail: Optional[UploadFile] = None,
         images: Optional[List[UploadFile]] = None,
-        login: Optional[UploadFile] = None,
-        register: Optional[UploadFile] = None,
-        logout_button: Optional[UploadFile] = None,
-        user_profile: Optional[UploadFile] = None,
+        file: Optional[UploadFile] = None,  # NEW
         user_id: Optional[str] = None,
     ):
         t0 = time.monotonic()
@@ -231,24 +233,32 @@ class CreateCompAuthenticationsWithUploadsCommand(BaseCommand):
             ct = _resolve_content_type(f)
             return data, ct
 
-        async def _upload_one(f: Optional[UploadFile], subfolder: str, default_stem: str, image: bool = False):
+        async def _upload_one(
+            f: Optional[UploadFile],
+            subfolder: str,
+            default_stem: str,
+            image: bool = False,
+        ) -> Optional[Dict[str, Any]]:
             if not f:
                 return None
             if image:
                 _, ct = await _read_and_check_img(f)
             else:
                 _, ct = await _read_and_check_any(f)
+
             fname = make_uuid_name(f.filename, default_stem)
             res = await asyncio.to_thread(
                 gcs.upload_fileobj, f.file, fname, f"{dest_prefix}/{subfolder}", False, ct
             )
-            # try to get size
+
+            # best-effort size
             try:
                 f.file.seek(0, os.SEEK_END)
                 size = f.file.tell()
                 f.file.seek(0)
             except Exception:
                 size = None
+
             return {
                 "key": res["key"],
                 "filename": f.filename,
@@ -259,32 +269,34 @@ class CreateCompAuthenticationsWithUploadsCommand(BaseCommand):
         # ---- upload thumbnail ----
         thumbnail_key: Optional[str] = None
         if thumbnail:
-            thumb_meta = await _upload_one(thumbnail, "thumbnail", "thumbnail", image=True)
-            thumbnail_key = thumb_meta["key"] if thumb_meta else None
+            try:
+                thumb_meta = await _upload_one(thumbnail, "thumbnail", "thumbnail", image=True)
+                thumbnail_key = thumb_meta["key"] if thumb_meta else None
+            except Exception as e:
+                logger.exception("[authentications] thumbnail upload failed")
+                raise HTTPException(status_code=400, detail=str(e))
 
         # ---- upload images[] ----
         images_keys: Optional[List[str]] = None
         if images:
             images_keys = []
             for idx, img in enumerate(images):
-                meta = await _upload_one(img, "images", f"img{idx:03d}", image=True)
-                if meta:
-                    images_keys.append(meta["key"])
+                try:
+                    meta = await _upload_one(img, "images", f"img{idx:03d}", image=True)
+                    if meta:
+                        images_keys.append(meta["key"])
+                except Exception as e:
+                    logger.exception("[authentications] images upload failed idx=%s", idx)
+                    raise HTTPException(status_code=400, detail=str(e))
 
-        # ---- upload auth files -> file_links JSON ----
-        file_links: Dict[str, Any] = {}
-        for k, uf in {
-            "login": login,
-            "register": register,
-            "logout_button": logout_button,
-            "user_profile": user_profile,
-        }.items():
+        # ---- upload single file -> file_link ----
+        file_link_key: Optional[str] = None
+        if file:
             try:
-                meta = await _upload_one(uf, "auth", k, image=False)
-                if meta:
-                    file_links[k] = meta
+                meta = await _upload_one(file, "file", "file", image=False)
+                file_link_key = meta["key"] if meta else None
             except Exception as e:
-                logger.exception("[authentications] upload failed for %s", k)
+                logger.exception("[authentications] file upload failed")
                 raise HTTPException(status_code=400, detail=str(e))
 
         # ---- persist ----
@@ -294,9 +306,11 @@ class CreateCompAuthenticationsWithUploadsCommand(BaseCommand):
                 name=payload.name,
                 description=payload.description,
                 template_id=payload.template_id,
+                group_id=payload.group_id,
+                sub_type=payload.sub_type,
                 thumbnail=thumbnail_key,
                 images=images_keys,
-                file_links=file_links or None,
+                file_link=file_link_key,
                 metadata_json=payload.metadata or None,
                 created_by=user_id,
                 updated_by=user_id,
@@ -311,9 +325,10 @@ class CreateCompAuthenticationsWithUploadsCommand(BaseCommand):
             signed = {
                 "thumbnail": None,
                 "images": [],
-                "file_links": {},
+                "file_link": None,
                 "row_id": row_id,
             }
+
             if thumbnail_key:
                 try:
                     signed["thumbnail"] = gcs.signed_get_url(thumbnail_key, expires_seconds=3600)
@@ -326,11 +341,11 @@ class CreateCompAuthenticationsWithUploadsCommand(BaseCommand):
                 except Exception:
                     signed["images"].append(f"https://storage.googleapis.com/{gcs.bucket_name}/{k}")
 
-            for key, meta in (file_links or {}).items():
+            if file_link_key:
                 try:
-                    signed["file_links"][key] = gcs.signed_get_url(meta["key"], expires_seconds=3600)
+                    signed["file_link"] = gcs.signed_get_url(file_link_key, expires_seconds=3600)
                 except Exception:
-                    signed["file_links"][key] = f"https://storage.googleapis.com/{gcs.bucket_name}/{meta['key']}"
+                    signed["file_link"] = f"https://storage.googleapis.com/{gcs.bucket_name}/{file_link_key}"
 
             return {
                 "status": "ok",
@@ -338,6 +353,7 @@ class CreateCompAuthenticationsWithUploadsCommand(BaseCommand):
                 "gcs": signed,
                 "perf_ms": round((time.monotonic() - t0) * 1000, 2),
             }
+
         except HTTPException:
             db.rollback()
             raise
@@ -348,7 +364,8 @@ class CreateCompAuthenticationsWithUploadsCommand(BaseCommand):
         finally:
             db.close()
             # close any open file handles
-            for uf in [thumbnail] + (images or []) + [login, register, logout_button, user_profile]:
+            all_files: List[Optional[UploadFile]] = [thumbnail, file] + (images or [])
+            for uf in all_files:
                 try:
                     if uf and getattr(uf, "file", None) and not uf.file.closed:
                         uf.file.close()
@@ -366,7 +383,12 @@ def _comp_auth_to_dict(m: CompAuthentication) -> dict:
         "thumbnail": getattr(m, "thumbnail", None),
         "images": getattr(m, "images", None),
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,
-        "file_links": getattr(m, "file_links", None) or {},
+
+        # NEW
+        "group_id": str(m.group_id) if getattr(m, "group_id", None) else None,
+        "sub_type": getattr(m, "sub_type", None),
+        "file_link": getattr(m, "file_link", None),
+
         "metadata": getattr(m, "metadata_json", None) or {},
         "tags": getattr(m, "tags", []) or [],
         "created_by": m.created_by,

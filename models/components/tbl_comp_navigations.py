@@ -26,6 +26,7 @@ class CompNavigation(Base):
         server_default=func.gen_random_uuid(),
         nullable=False,
     )
+
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
 
@@ -43,11 +44,17 @@ class CompNavigation(Base):
     thumbnail = Column(Text, nullable=True)
     images = Column(JSONB, nullable=True)
 
-    # NEW: metadata JSONB column (DB name "metadata", attribute name metadata_json)
+    # DB column name is "metadata" but attribute name is metadata_json
     metadata_json = Column("metadata", JSONB, nullable=True)
 
     template_id = Column(UUID(as_uuid=True), nullable=True)
-    file_links = Column(JSONB, nullable=True)  # JSONB (replaces file_link TEXT)
+
+    # UPDATED: single file only
+    file_link = Column(Text, nullable=True)
+
+    # NEW: group/sub typing (align with authentications)
+    group_id = Column(UUID(as_uuid=True), nullable=True)
+    sub_type = Column(String(255), nullable=True)
 
     tags = Column(ARRAY(String), nullable=False, server_default="{}")
 
@@ -70,13 +77,11 @@ class CompNavigation(Base):
         Index("idx_tbl_comp_navigations_created_by", "created_by"),
         Index("idx_tbl_comp_navigations_updated_by", "updated_by"),
         Index("idx_tbl_comp_navigations_tags_gin", "tags", postgresql_using="gin"),
-        Index(
-            "idx_tbl_comp_navigations_metadata_gin",
-            "metadata",
-            postgresql_using="gin",
-        ),
-        # If you later add a GIN index on file_links, uncomment the line below
-        # Index("idx_tbl_comp_navigations_file_links_gin", "file_links", postgresql_using="gin"),
+        Index("idx_tbl_comp_navigations_metadata_gin", "metadata", postgresql_using="gin"),
+
+        # NEW indexes (match migration)
+        Index("idx_tbl_comp_navigations_group_id", "group_id"),
+        Index("idx_tbl_comp_navigations_sub_type", "sub_type"),
     )
 
 

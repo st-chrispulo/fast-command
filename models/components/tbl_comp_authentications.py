@@ -29,6 +29,10 @@ class CompAuthentication(Base):
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
 
+    # NEW: group + subtype (aligns with your other comp tables)
+    group_id = Column(UUID(as_uuid=True), nullable=True)
+    sub_type = Column(String(100), nullable=True)
+
     created_by = Column(
         Integer,
         ForeignKey("tbl_users.id", onupdate="CASCADE", ondelete="SET NULL"),
@@ -43,13 +47,15 @@ class CompAuthentication(Base):
     thumbnail = Column(Text, nullable=True)
     images = Column(JSONB, nullable=True)
 
-    # NEW: metadata JSONB column (DB name "metadata", attribute name metadata_json)
+    # DB column name "metadata", python attribute "metadata_json"
     metadata_json = Column("metadata", JSONB, nullable=True)
 
     template_id = Column(UUID(as_uuid=True), nullable=True)
-    file_links = Column(JSONB, nullable=True)  # JSONB (replaces file_link TEXT)
 
-    tags = Column(ARRAY(String), nullable=False, server_default='{}')
+    # CHANGED: single file link (no longer JSONB list)
+    file_link = Column(Text, nullable=True)
+
+    tags = Column(ARRAY(String), nullable=False, server_default="{}")
 
     created_at = Column(
         DateTime(timezone=True),
@@ -75,8 +81,8 @@ class CompAuthentication(Base):
             "metadata",
             postgresql_using="gin",
         ),
-        # If you later add a GIN index on file_links, uncomment the line below
-        # Index("idx_tbl_comp_authentications_file_links_gin", "file_links", postgresql_using="gin"),
+        Index("idx_tbl_comp_authentications_group_id", "group_id"),
+        Index("idx_tbl_comp_authentications_sub_type", "sub_type"),
     )
 
 

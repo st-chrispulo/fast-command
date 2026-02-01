@@ -4,8 +4,8 @@ from typing import Optional, Any, Dict, List, Tuple, ClassVar, Set
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import or_, asc, desc, func
-from sqlalchemy.orm import Session
-from sqlalchemy.dialects.postgresql import array, ARRAY, TEXT  # <-- IMPORTANT
+from sqlalchemy.dialects.postgresql import array, ARRAY, TEXT  # IMPORTANT
+from uuid import UUID as PyUUID
 
 from commands.base_command import BaseCommand
 from auth.db import SessionLocal
@@ -16,14 +16,21 @@ from models.tbl_user_tags import UserTag
 
 class AuthenticationListQuery(BaseModel):
     search_term: Optional[str] = Field(default=None, description="Search over name/description")
-    sort_key: Optional[str]    = Field(default="created_at", description="Sort field")
-    sort_order: Optional[str]  = Field(default="desc", description='"asc" or "desc"')
+    sort_key: Optional[str] = Field(default="created_at", description="Sort field")
+    sort_order: Optional[str] = Field(default="desc", description='"asc" or "desc"')
     current_page: Optional[int] = Field(default=1, ge=1, description="1-based page")
-    limit: Optional[int]         = Field(default=10, ge=1, le=100, description="page size (<=100)")
+    limit: Optional[int] = Field(default=10, ge=1, le=100, description="page size (<=100)")
     # Comma-separated tags to filter by (ANY match)
     tags: Optional[str] = Field(default=None, description="Comma-separated tag names to filter by (ANY match)")
 
-    ALLOWED_SORT_KEYS: ClassVar[Set[str]] = {"id", "name", "created_at", "updated_at"}
+    # NEW (optional filters; safe if client ignores)
+    group_id: Optional[PyUUID] = Field(default=None, description="Filter by group_id")
+    sub_type: Optional[str] = Field(default=None, description="Filter by sub_type (exact)")
+
+    ALLOWED_SORT_KEYS: ClassVar[Set[str]] = {
+        "id", "name", "created_at", "updated_at",
+        "group_id", "sub_type",  # NEW (optional)
+    }
 
     @field_validator("sort_order")
     @classmethod
@@ -36,6 +43,14 @@ class AuthenticationListQuery(BaseModel):
     def _whitelist_sort(cls, v: Optional[str]) -> str:
         v = (v or "created_at").lower()
         return v if v in cls.ALLOWED_SORT_KEYS else "created_at"
+
+    @field_validator("sub_type", mode="before")
+    @classmethod
+    def _sub_type_trim(cls, v):
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
 
 
 def _apply_search(q, term: Optional[str]):
@@ -51,11 +66,14 @@ def _apply_search(q, term: Optional[str]):
 
 
 def _apply_sort(q, sort_key: str, sort_order: str):
-    col_expr = (
-        func.lower(CompAuthentication.name)
-        if sort_key == "name"
-        else getattr(CompAuthentication, sort_key, CompAuthentication.created_at)
-    )
+    # case-insensitive sort for name/sub_type
+    if sort_key == "name":
+        col_expr = func.lower(CompAuthentication.name)
+    elif sort_key == "sub_type":
+        col_expr = func.lower(CompAuthentication.sub_type)
+    else:
+        col_expr = getattr(CompAuthentication, sort_key, CompAuthentication.created_at)
+
     return q.order_by(asc(col_expr) if sort_order == "asc" else desc(col_expr))
 
 
@@ -86,39 +104,11 @@ def _sign_key_maybe(gcs, key: Optional[str]) -> Optional[str]:
         return key
 
 
-def _serialize_file_links(file_links: Optional[Dict[str, Any]], gcs) -> Dict[str, Any]:
-    """
-    file_links is a map like:
-      {
-        "login": { "key": "...", "filename": "...", "content_type": "...", "size": 123 },
-        ...
-      }
-    We return the same structure plus a best-effort signed url under "url".
-    """
-    out: Dict[str, Any] = {}
-    if not isinstance(file_links, dict):
-        return out
-
-    for name, meta in file_links.items():
-        try:
-            key = meta.get("key")
-            url = _sign_key_maybe(gcs, key)
-            out[name] = {
-                "key": key,
-                "filename": meta.get("filename"),
-                "content_type": meta.get("content_type"),
-                "size": meta.get("size"),
-                "url": url,
-            }
-        except Exception:
-            # If meta isn't a dict or unexpected shape, pass through as-is
-            out[name] = meta
-    return out
-
-
 def _serialize_auth(row: CompAuthentication, gcs) -> Dict[str, Any]:
     images = _as_list(getattr(row, "images", []))
     signed_images = [_sign_key_maybe(gcs, img) for img in images]
+
+    file_key = getattr(row, "file_link", None)
 
     return {
         "id": str(getattr(row, "id", "")),
@@ -128,12 +118,22 @@ def _serialize_auth(row: CompAuthentication, gcs) -> Dict[str, Any]:
         "updated_at": _iso(getattr(row, "updated_at", None)),
         "created_by": getattr(row, "created_by", None),
         "updated_by": getattr(row, "updated_by", None),
+
         "thumbnail": _sign_key_maybe(gcs, getattr(row, "thumbnail", None)),
         "images": signed_images,
+
         "template_id": str(getattr(row, "template_id")) if getattr(row, "template_id", None) else None,
-        "file_links": _serialize_file_links(getattr(row, "file_links", None), gcs),
+
+        # NEW model fields
+        "group_id": str(getattr(row, "group_id")) if getattr(row, "group_id", None) else None,
+        "sub_type": getattr(row, "sub_type", None),
+
+        # CHANGED: single file_link (signed)
+        "file_link": _sign_key_maybe(gcs, file_key),
+
         "tags": _as_list(getattr(row, "tags", [])),
-        # NEW: expose metadata_json as "metadata"
+
+        # expose metadata_json as "metadata"
         "metadata": getattr(row, "metadata_json", None) or {},
     }
 
@@ -175,9 +175,7 @@ class AuthenticationGetCommand(BaseCommand):
             "limit": limit,
             "errors": [],
             "error_code": None,
-            "tagging": {
-                "tags": []
-            },
+            "tagging": {"tags": []},
         }
 
         with SessionLocal() as session:
@@ -187,13 +185,18 @@ class AuthenticationGetCommand(BaseCommand):
                 # Search
                 q = _apply_search(q, payload.search_term)
 
+                # Optional filters
+                if payload.group_id:
+                    q = q.filter(CompAuthentication.group_id == payload.group_id)
+                if payload.sub_type:
+                    q = q.filter(func.lower(CompAuthentication.sub_type) == payload.sub_type.lower())
+
                 # Tags filter (ANY overlap) with proper Postgres text[] typing
                 raw_tags = payload.tags or ""
                 tags_list = [t.strip() for t in raw_tags.split(",") if t.strip()]
                 if tags_list:
                     typed_array = array(tags_list, type_=ARRAY(TEXT()))  # text[] literal
                     q = q.filter(CompAuthentication.tags.op("&&")(typed_array))
-                    # or: q = q.filter(CompAuthentication.tags.overlap(typed_array))
 
                 # Sort and page
                 q = _apply_sort(q, payload.sort_key, payload.sort_order)
@@ -216,7 +219,6 @@ class AuthenticationGetCommand(BaseCommand):
                         .filter(UserTag.user_id == uid)
                         .order_by(func.lower(UserTag.name).asc())
                     )
-                    # tag_q = tag_q.filter(UserTag.is_active.is_(True))  # enable if you want active-only
                     user_tags = tag_q.all()
                     resp["tagging"]["tags"] = [_serialize_tag(t) for t in user_tags]
                 else:

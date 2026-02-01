@@ -1,4 +1,5 @@
 # commands/components/navigations/get.py
+
 from typing import Optional, Any, Dict, List, Tuple, ClassVar, Set
 
 from fastapi import HTTPException
@@ -16,14 +17,27 @@ from models.tbl_user_tags import UserTag
 
 class NavigationListQuery(BaseModel):
     search_term: Optional[str] = Field(default=None, description="Search over name/description")
-    sort_key: Optional[str]    = Field(default="created_at", description="Sort field")
-    sort_order: Optional[str]  = Field(default="desc", description='"asc" or "desc"')
+    sort_key: Optional[str] = Field(default="created_at", description="Sort field")
+    sort_order: Optional[str] = Field(default="desc", description='"asc" or "desc"')
     current_page: Optional[int] = Field(default=1, ge=1, description="1-based page")
-    limit: Optional[int]         = Field(default=10, ge=1, le=100, description="page size (<=100)")
+    limit: Optional[int] = Field(default=10, ge=1, le=100, description="page size (<=100)")
+
     # Comma-separated tags to filter by (ANY match)
     tags: Optional[str] = Field(default=None, description="Comma-separated tag names to filter by (ANY match)")
 
-    ALLOWED_SORT_KEYS: ClassVar[Set[str]] = {"id", "name", "created_at", "updated_at"}
+    # NEW filters (align with migration/model)
+    group_id: Optional[str] = Field(default=None, description="Filter by group_id (uuid)")
+    sub_type: Optional[str] = Field(default=None, description="Filter by sub_type")
+
+    ALLOWED_SORT_KEYS: ClassVar[Set[str]] = {
+        "id",
+        "name",
+        "created_at",
+        "updated_at",
+        # NEW sort keys
+        "group_id",
+        "sub_type",
+    }
 
     @field_validator("sort_order")
     @classmethod
@@ -36,6 +50,22 @@ class NavigationListQuery(BaseModel):
     def _whitelist_sort(cls, v: Optional[str]) -> str:
         v = (v or "created_at").lower()
         return v if v in cls.ALLOWED_SORT_KEYS else "created_at"
+
+    @field_validator("group_id", mode="before")
+    @classmethod
+    def _group_id_trim(cls, v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
+
+    @field_validator("sub_type", mode="before")
+    @classmethod
+    def _sub_type_trim(cls, v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
 
 
 def _apply_search(q, term: Optional[str]):
@@ -50,12 +80,28 @@ def _apply_search(q, term: Optional[str]):
     )
 
 
+def _apply_filters(q, group_id: Optional[str], sub_type: Optional[str]):
+    if group_id:
+        # payload.group_id is string; cast via UUID parsing for safety
+        try:
+            gid = str(group_id).strip()
+            # rely on postgres uuid cast by passing UUID string (or raise 400 if invalid)
+            q = q.filter(CompNavigation.group_id == gid)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid group_id (must be UUID)")
+
+    if sub_type:
+        q = q.filter(CompNavigation.sub_type == sub_type)
+
+    return q
+
+
 def _apply_sort(q, sort_key: str, sort_order: str):
-    col_expr = (
-        func.lower(CompNavigation.name)
-        if sort_key == "name"
-        else getattr(CompNavigation, sort_key, CompNavigation.created_at)
-    )
+    if sort_key == "name":
+        col_expr = func.lower(CompNavigation.name)
+    else:
+        col_expr = getattr(CompNavigation, sort_key, CompNavigation.created_at)
+
     return q.order_by(asc(col_expr) if sort_order == "asc" else desc(col_expr))
 
 
@@ -86,36 +132,18 @@ def _sign_key_maybe(gcs, key: Optional[str]) -> Optional[str]:
         return key
 
 
-def _serialize_file_links(file_links: Optional[Dict[str, Any]], gcs) -> Dict[str, Any]:
+def _serialize_file_link(file_link: Optional[str], gcs) -> Optional[Dict[str, Any]]:
     """
-    file_links is a map like:
-      {
-        "top":    { "key": "...", "filename": "...", "content_type": "...", "size": 123 },
-        "side":   { ... },
-        "bottom": { ... },
-        ...
-      }
-    We return the same structure plus a best-effort signed url under "url".
+    NEW model: file_link is a single TEXT key.
+    We return:
+      { "key": "...", "url": "..." }
     """
-    out: Dict[str, Any] = {}
-    if not isinstance(file_links, dict):
-        return out
-
-    for name, meta in file_links.items():
-        try:
-            key = meta.get("key")
-            url = _sign_key_maybe(gcs, key)
-            out[name] = {
-                "key": key,
-                "filename": meta.get("filename"),
-                "content_type": meta.get("content_type"),
-                "size": meta.get("size"),
-                "url": url,
-            }
-        except Exception:
-            # If meta isn't a dict or unexpected shape, pass through as-is
-            out[name] = meta
-    return out
+    if not file_link:
+        return None
+    return {
+        "key": file_link,
+        "url": _sign_key_maybe(gcs, file_link),
+    }
 
 
 def _serialize_nav(row: CompNavigation, gcs) -> Dict[str, Any]:
@@ -133,9 +161,16 @@ def _serialize_nav(row: CompNavigation, gcs) -> Dict[str, Any]:
         "thumbnail": _sign_key_maybe(gcs, getattr(row, "thumbnail", None)),
         "images": signed_images,
         "template_id": str(getattr(row, "template_id")) if getattr(row, "template_id", None) else None,
-        "file_links": _serialize_file_links(getattr(row, "file_links", None), gcs),
+
+        # UPDATED: single file_link instead of file_links map
+        "file_link": _serialize_file_link(getattr(row, "file_link", None), gcs),
+
+        # NEW
+        "group_id": str(getattr(row, "group_id", None)) if getattr(row, "group_id", None) else None,
+        "sub_type": getattr(row, "sub_type", None),
+
         "tags": _as_list(getattr(row, "tags", [])),
-        # NEW: expose JSONB metadata_json as metadata
+        # expose JSONB metadata_json as metadata
         "metadata": getattr(row, "metadata_json", None) or {},
     }
 
@@ -177,9 +212,7 @@ class NavigationGetCommand(BaseCommand):
             "limit": limit,
             "errors": [],
             "error_code": None,
-            "tagging": {
-                "tags": []
-            },
+            "tagging": {"tags": []},
         }
 
         with SessionLocal() as session:
@@ -188,6 +221,9 @@ class NavigationGetCommand(BaseCommand):
 
                 # Search
                 q = _apply_search(q, payload.search_term)
+
+                # NEW filters
+                q = _apply_filters(q, payload.group_id, payload.sub_type)
 
                 # Tags filter (ANY overlap) with proper Postgres text[] typing
                 raw_tags = payload.tags or ""
@@ -218,7 +254,6 @@ class NavigationGetCommand(BaseCommand):
                         .filter(UserTag.user_id == uid)
                         .order_by(func.lower(UserTag.name).asc())
                     )
-                    # tag_q = tag_q.filter(UserTag.is_active.is_(True))  # enable if you want active-only
                     user_tags = tag_q.all()
                     resp["tagging"]["tags"] = [_serialize_tag(t) for t in user_tags]
                 else:

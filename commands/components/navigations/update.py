@@ -98,6 +98,10 @@ class UpdateCompNavigationsPayload(BaseModel):
     description: Optional[str] = None
     template_id: Optional[UUID] = None
 
+    # NEW (per model/migration)
+    group_id: Optional[UUID] = None
+    sub_type: Optional[str] = None
+
     tags: Optional[str] = None
     tags_mode: Literal["append", "replace", "remove"] = Field(default="replace")
     tags_clear: bool = False
@@ -107,15 +111,12 @@ class UpdateCompNavigationsPayload(BaseModel):
     thumbnail_clear: bool = False
     images_clear: bool = False
 
-    # for JSONB file_links { top, side, bottom }
-    file_links_clear: bool = False
-    top_clear: bool = False
-    side_clear: bool = False
-    bottom_clear: bool = False
+    # UPDATED: single file_link (TEXT), not JSONB file_links
+    file_link_clear: bool = False
 
     # NEW: metadata controls (JSONB metadata_json)
     metadata: Optional[Any] = None   # accepts dict or JSON string
-    metadata_clear: bool = False                # clear metadata_json when True
+    metadata_clear: bool = False     # clear metadata_json when True
 
     @field_validator("name")
     @classmethod
@@ -134,6 +135,14 @@ class UpdateCompNavigationsPayload(BaseModel):
             return None
         return str(v).strip() or None
 
+    @field_validator("sub_type", mode="before")
+    @classmethod
+    def _sub_type_in(cls, v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
+
     @field_validator("metadata", mode="before")
     @classmethod
     def _metadata_in(cls, v):
@@ -141,11 +150,9 @@ class UpdateCompNavigationsPayload(BaseModel):
         Accept dict, None, or JSON string and normalize to dict/None.
         Same semantics as other *_with_uploads commands.
         """
-        # Already dict / None
         if v is None or isinstance(v, dict):
             return v
 
-        # JSON string from multipart/form-data
         if isinstance(v, str):
             raw = v.strip()
             if not raw:
@@ -158,10 +165,8 @@ class UpdateCompNavigationsPayload(BaseModel):
             if isinstance(parsed, dict):
                 return parsed
 
-            # Valid JSON but not an object → wrap
             return {"value": parsed}
 
-        # Fallback: best-effort cast to dict
         try:
             return dict(v)
         except Exception:
@@ -173,14 +178,13 @@ class UpdateCompNavigationsPayload(BaseModel):
 class UpdateNavigationsWithUploadsCommand(BaseCommand):
     """
     Partially updates a CompNavigation row:
-      - name, description, template_id, tags, metadata_json, thumbnail, images, file_links, updated_by
+      - name, description, template_id, tags, metadata_json, thumbnail, images, file_link,
+        group_id, sub_type, updated_by
 
     File uploads (multipart/form-data):
       - thumbnail: UploadFile (single)  -> stored as GCS key in 'thumbnail'
       - images: List[UploadFile]        -> stored as list of GCS keys in 'images'
-      - top: UploadFile                 -> stored in file_links.top (JSON)
-      - side: UploadFile                -> stored in file_links.side (JSON)
-      - bottom: UploadFile              -> stored in file_links.bottom (JSON)
+      - file: UploadFile                -> stored as GCS key in 'file_link'
     """
     name = "components/navigations/update_with_uploads"
     schema = UpdateCompNavigationsPayload
@@ -192,9 +196,7 @@ class UpdateNavigationsWithUploadsCommand(BaseCommand):
     file_fields = [
         ("thumbnail", False),
         ("images", True),
-        ("top", False),
-        ("side", False),
-        ("bottom", False),
+        ("file", False),  # NEW: single file
     ]
 
     base_folder = "uploads"
@@ -204,9 +206,7 @@ class UpdateNavigationsWithUploadsCommand(BaseCommand):
         payload: UpdateCompNavigationsPayload,
         thumbnail: Optional[UploadFile] = None,
         images: Optional[List[UploadFile]] = None,
-        top: Optional[UploadFile] = None,
-        side: Optional[UploadFile] = None,
-        bottom: Optional[UploadFile] = None,
+        file: Optional[UploadFile] = None,
         user_id: Optional[str] = None,
     ):
         start_t = time.monotonic()
@@ -217,6 +217,7 @@ class UpdateNavigationsWithUploadsCommand(BaseCommand):
 
         db = SessionLocal()
         try:
+            # NOTE: Query.get() is legacy in SA 2.x, but keeping your style consistent
             row: Optional[CompNavigation] = db.query(CompNavigation).get(payload.id)
             if not row:
                 raise HTTPException(status_code=404, detail="Navigation not found")
@@ -263,9 +264,10 @@ class UpdateNavigationsWithUploadsCommand(BaseCommand):
                 if not f:
                     return None
                 if image:
-                    await _read_and_check(f, MAX_IMAGE_MB, IMAGE_TYPES)
+                    _, ct = await _read_and_check(f, MAX_IMAGE_MB, IMAGE_TYPES)
                 else:
-                    await _read_and_check(f, MAX_FILE_MB, ANY_FILE_TYPES)
+                    _, ct = await _read_and_check(f, MAX_FILE_MB, ANY_FILE_TYPES)
+
                 fname = make_uuid_name(f.filename, default_stem)
                 res = await asyncio.to_thread(
                     gcs.upload_fileobj,
@@ -275,13 +277,14 @@ class UpdateNavigationsWithUploadsCommand(BaseCommand):
                     False,
                     _resolve_content_type(f),
                 )
-                # try to get size
+
                 try:
                     f.file.seek(0, os.SEEK_END)
                     size = f.file.tell()
                     f.file.seek(0)
                 except Exception:
                     size = None
+
                 return {
                     "key": res["key"],
                     "filename": f.filename,
@@ -296,6 +299,12 @@ class UpdateNavigationsWithUploadsCommand(BaseCommand):
                 row.description = payload.description
             if payload.template_id is not None:
                 row.template_id = payload.template_id
+
+            # NEW
+            if payload.group_id is not None:
+                row.group_id = payload.group_id
+            if payload.sub_type is not None:
+                row.sub_type = payload.sub_type
 
             # ------------ tags ------------
             current_tags: List[str] = list(row.tags or [])
@@ -317,7 +326,6 @@ class UpdateNavigationsWithUploadsCommand(BaseCommand):
                     current_tags = [t for t in current_tags if t not in remove_set]
             else:
                 if payload.tags_mode == "replace" and not payload.tags_clear:
-                    # do nothing: no incoming tags, no explicit clear
                     pass
 
             if payload.tags_clear or payload.tags is not None or row.tags is None:
@@ -327,7 +335,6 @@ class UpdateNavigationsWithUploadsCommand(BaseCommand):
             if payload.metadata_clear:
                 row.metadata_json = None
             elif payload.metadata is not None:
-                # fully replace when provided
                 row.metadata_json = payload.metadata or None
 
             # ------------ thumbnail (key) ------------
@@ -376,37 +383,18 @@ class UpdateNavigationsWithUploadsCommand(BaseCommand):
             if payload.images_clear or new_image_keys or (row.images is None):
                 row.images = current_images
 
-            # ------------ file_links JSONB (top/side/bottom) ------------
-            current_links: Dict[str, Any] = dict(getattr(row, "file_links", {}) or {})
+            # ------------ file_link (single TEXT key) ------------
+            if payload.file_link_clear:
+                row.file_link = None
 
-            if payload.file_links_clear:
-                current_links = {}
-
-            # clear specific slots
-            if payload.top_clear:
-                current_links.pop("top", None)
-            if payload.side_clear:
-                current_links.pop("side", None)
-            if payload.bottom_clear:
-                current_links.pop("bottom", None)
-
-            # upload new files for top/side/bottom
-            for slot, uf in {
-                "top": top,
-                "side": side,
-                "bottom": bottom,
-            }.items():
-                if not uf:
-                    continue
+            if file:
                 try:
-                    meta = await _upload_one(uf, "nav", slot, image=False)
-                    if meta:
-                        current_links[slot] = meta
+                    meta = await _upload_one(file, "nav", "nav", image=False)
+                    if meta and meta.get("key"):
+                        row.file_link = meta["key"]
                 except Exception as e:
-                    logger.exception("[navigations.update] upload failed for %s", slot)
+                    logger.exception("[navigations.update] upload failed for file")
                     raise HTTPException(status_code=400, detail=str(e))
-
-            row.file_links = current_links or None
 
             # updated_by
             row.updated_by = user_id
@@ -426,32 +414,27 @@ class UpdateNavigationsWithUploadsCommand(BaseCommand):
             signed = {
                 "thumbnail": None,
                 "images": [],
-                "file_links": {},
+                "file_link": None,
                 "row_id": str(row.id),
             }
 
-            # thumbnail
             if row.thumbnail:
                 try:
                     signed["thumbnail"] = gcs.signed_get_url(row.thumbnail, expires_seconds=3600)
                 except Exception:
                     signed["thumbnail"] = f"https://storage.googleapis.com/{gcs.bucket_name}/{row.thumbnail}"
 
-            # images
             for key in row.images or []:
                 try:
                     signed["images"].append(gcs.signed_get_url(key, expires_seconds=3600))
                 except Exception:
                     signed["images"].append(f"https://storage.googleapis.com/{gcs.bucket_name}/{key}")
 
-            # file_links
-            for slot, meta in (row.file_links or {}).items():
+            if row.file_link:
                 try:
-                    signed["file_links"][slot] = gcs.signed_get_url(meta["key"], expires_seconds=3600)
+                    signed["file_link"] = gcs.signed_get_url(row.file_link, expires_seconds=3600)
                 except Exception:
-                    signed["file_links"][slot] = (
-                        f"https://storage.googleapis.com/{gcs.bucket_name}/{meta['key']}"
-                    )
+                    signed["file_link"] = f"https://storage.googleapis.com/{gcs.bucket_name}/{row.file_link}"
 
             return {
                 "status": "ok",
@@ -470,7 +453,7 @@ class UpdateNavigationsWithUploadsCommand(BaseCommand):
         finally:
             db.close()
             # close any open file handles
-            for uf in [thumbnail] + (images or []) + [top, side, bottom]:
+            for uf in [thumbnail] + (images or []) + [file]:
                 try:
                     if uf and getattr(uf, "file", None) and not uf.file.closed:
                         uf.file.close()
@@ -488,7 +471,14 @@ def _comp_nav_to_dict(m: CompNavigation) -> dict:
         "thumbnail": getattr(m, "thumbnail", None),
         "images": getattr(m, "images", None),
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,
-        "file_links": getattr(m, "file_links", None) or {},
+
+        # UPDATED
+        "file_link": getattr(m, "file_link", None),
+
+        # NEW
+        "group_id": str(getattr(m, "group_id", None)) if getattr(m, "group_id", None) else None,
+        "sub_type": getattr(m, "sub_type", None),
+
         "tags": getattr(m, "tags", []) or [],
         "metadata": getattr(m, "metadata_json", None) or {},
         "created_by": m.created_by,

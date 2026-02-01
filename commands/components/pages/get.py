@@ -1,9 +1,11 @@
+# commands/components/pages/get.py
+
 from typing import Optional, Any, Dict, List, Tuple, ClassVar, Set
+from uuid import UUID
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import or_, asc, desc, func
-from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import array, ARRAY, TEXT
 
 from commands.base_command import BaseCommand
@@ -13,17 +15,67 @@ from models.components.tbl_comp_pages import CompPage
 from models.tbl_user_tags import UserTag
 
 
+# -----------------------------
+# Query schema
+# -----------------------------
 class PageListQuery(BaseModel):
     search_term: Optional[str] = Field(default=None, description="Search over name/description")
-    sort_key: Optional[str]    = Field(default="created_at", description="Sort field")
-    sort_order: Optional[str]  = Field(default="desc", description='"asc" or "desc"')
+    sort_key: Optional[str] = Field(default="created_at", description="Sort field")
+    sort_order: Optional[str] = Field(default="desc", description='"asc" or "desc"')
     current_page: Optional[int] = Field(default=1, ge=1, description="1-based page")
-    limit: Optional[int]         = Field(default=10, ge=1, le=100, description="page size (<=100)")
+    limit: Optional[int] = Field(default=10, ge=1, le=100, description="page size (<=100)")
     tags: Optional[str] = Field(default=None, description="Comma-separated tag names to filter by (ANY match)")
-    # OPTIONAL: filter by specific page id
-    id: Optional[str] = Field(default=None, description="Filter by specific page id")
+    id: Optional[str] = Field(default=None, description="Filter by specific page id (UUID)")
 
-    ALLOWED_SORT_KEYS: ClassVar[Set[str]] = {"id", "name", "created_at", "updated_at"}
+    # ✅ NEW / UPDATED
+    group_id: Optional[str] = Field(default=None, description="Filter by group_id (UUID)")
+    group_type: Optional[str] = Field(default=None, description="Filter by group_type")
+    sub_type: Optional[str] = Field(default=None, description="Filter by sub_type")
+
+    ALLOWED_SORT_KEYS: ClassVar[Set[str]] = {
+        "id",
+        "name",
+        "created_at",
+        "updated_at",
+        # ✅ NEW (optional)
+        "group_id",
+        "group_type",
+        "sub_type",
+    }
+
+    @field_validator("id")
+    @classmethod
+    def _norm_id(cls, v: Optional[str]) -> Optional[str]:
+        if not v:
+            return None
+        v = v.strip()
+        UUID(v)  # validate UUID format
+        return v
+
+    @field_validator("group_id")
+    @classmethod
+    def _norm_group_id(cls, v: Optional[str]) -> Optional[str]:
+        if not v:
+            return None
+        v = v.strip()
+        UUID(v)  # validate UUID format
+        return v
+
+    @field_validator("group_type", mode="before")
+    @classmethod
+    def _norm_group_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
+
+    @field_validator("sub_type", mode="before")
+    @classmethod
+    def _norm_sub_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
 
     @field_validator("sort_order")
     @classmethod
@@ -38,6 +90,9 @@ class PageListQuery(BaseModel):
         return v if v in cls.ALLOWED_SORT_KEYS else "created_at"
 
 
+# -----------------------------
+# Helpers
+# -----------------------------
 def _apply_search(q, term: Optional[str]):
     if not term:
         return q
@@ -51,11 +106,7 @@ def _apply_search(q, term: Optional[str]):
 
 
 def _apply_sort(q, sort_key: str, sort_order: str):
-    col_expr = (
-        func.lower(CompPage.name)
-        if sort_key == "name"
-        else getattr(CompPage, sort_key, CompPage.created_at)
-    )
+    col_expr = func.lower(CompPage.name) if sort_key == "name" else getattr(CompPage, sort_key, CompPage.created_at)
     return q.order_by(asc(col_expr) if sort_order == "asc" else desc(col_expr))
 
 
@@ -93,10 +144,18 @@ def _serialize_page(row: CompPage, gcs) -> Dict[str, Any]:
     images = _as_list(getattr(row, "images", []))
     signed_images = [_sign_url_maybe(gcs, img) for img in images]
 
+    group_id_val = getattr(row, "group_id", None)
+
     return {
         "id": str(getattr(row, "id", "")),
         "name": getattr(row, "name", None),
         "description": getattr(row, "description", None),
+
+        # ✅ NEW
+        "group_id": str(group_id_val) if group_id_val else None,
+        "group_type": getattr(row, "group_type", None),
+        "sub_type": getattr(row, "sub_type", None),
+
         "created_at": _iso(getattr(row, "created_at", None)),
         "updated_at": _iso(getattr(row, "updated_at", None)),
         "created_by": getattr(row, "created_by", None),
@@ -104,7 +163,6 @@ def _serialize_page(row: CompPage, gcs) -> Dict[str, Any]:
         "images": signed_images,
         "file": _sign_url_maybe(gcs, getattr(row, "file_link", None)),
         "tags": _as_list(getattr(row, "tags", [])),
-        # NEW: surface metadata_json as `metadata`
         "metadata": getattr(row, "metadata_json", None) or {},
     }
 
@@ -120,9 +178,19 @@ def _serialize_tag(t: UserTag) -> Dict[str, Any]:
     }
 
 
+# -----------------------------
+# Command
+# -----------------------------
 class PageGetCommand(BaseCommand):
     """
     GET /components/pages/get
+
+    Supports:
+      - id=<uuid>
+      - group_id=<uuid>
+      - group_type=<string>
+      - sub_type=<string>
+      - tags overlap, search, sort, pagination
     """
     name = "components/pages/get"
     schema = PageListQuery
@@ -164,7 +232,14 @@ class PageGetCommand(BaseCommand):
                 if tags_list:
                     typed_array = array(tags_list, type_=ARRAY(TEXT()))
                     q = q.filter(CompPage.tags.op("&&")(typed_array))
-                    # or: q = q.filter(CompPage.tags.overlap(typed_array))
+
+                # ✅ NEW: group_id/group_type/sub_type filters
+                if payload.group_id:
+                    q = q.filter(CompPage.group_id == payload.group_id)
+                if payload.group_type:
+                    q = q.filter(CompPage.group_type == payload.group_type)
+                if payload.sub_type:
+                    q = q.filter(CompPage.sub_type == payload.sub_type)
 
                 # Sort & paginate
                 q = _apply_sort(q, payload.sort_key, payload.sort_order)

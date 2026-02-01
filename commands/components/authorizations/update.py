@@ -10,7 +10,7 @@ from uuid import uuid4
 from typing import Optional, List, Any, Dict
 from fastapi import UploadFile, HTTPException
 from pydantic import BaseModel, field_validator
-from uuid import UUID
+from uuid import UUID as PyUUID
 
 from commands.base_command import BaseCommand
 from auth.db import SessionLocal
@@ -95,10 +95,16 @@ def _is_truthy(v: Optional[str]) -> bool:
 # ---------- payload ----------
 
 class UpdateCompAuthenticationsPayload(BaseModel):
-    id: UUID
+    id: PyUUID
+
     name: Optional[str] = None
     description: Optional[str] = None
-    template_id: Optional[UUID] = None
+    template_id: Optional[PyUUID] = None
+
+    # NEW
+    group_id: Optional[PyUUID] = None
+    sub_type: Optional[str] = None
+
     tags: Optional[str] = None  # comma-separated
 
     # metadata JSON (maps to CompAuthentication.metadata_json / JSONB)
@@ -108,11 +114,10 @@ class UpdateCompAuthenticationsPayload(BaseModel):
     # clears/removals come as strings in form-data ("1", "true", etc.)
     clear_thumbnail: Optional[str] = None
     clear_images: Optional[str] = None
-    clear_file_links: Optional[str] = None
+    clear_file_link: Optional[str] = None  # NEW (replaces clear_file_links)
 
-    # arrays in form-data: remove_image_keys[]=... remove_file_link_keys[]=...
+    # arrays in form-data: remove_image_keys[]=...
     remove_image_keys: Optional[List[str]] = None
-    remove_file_link_keys: Optional[List[str]] = None  # keys: login,register,logout_button,user_profile
 
     @field_validator("name")
     @classmethod
@@ -129,12 +134,19 @@ class UpdateCompAuthenticationsPayload(BaseModel):
     def _tags_in(cls, v):
         return str(v).strip() if v is not None else v
 
+    @field_validator("sub_type", mode="before")
+    @classmethod
+    def _sub_type_in(cls, v):
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
+
     @field_validator("metadata", mode="before")
     @classmethod
     def _metadata_in(cls, v):
         """
         Accept dict, None, or JSON string and normalize to dict/None.
-        Same behavior as in create_with_uploads & other component commands.
         """
         if v is None or isinstance(v, dict):
             return v
@@ -146,11 +158,9 @@ class UpdateCompAuthenticationsPayload(BaseModel):
                 parsed = json.loads(v)
                 if isinstance(parsed, dict):
                     return parsed
-                # valid JSON but not an object -> wrap
                 return {"value": parsed}
             except Exception as e:
                 raise ValueError(f"metadata must be valid JSON if provided as string: {e}")
-        # Fallback: best-effort cast to dict
         try:
             return dict(v)
         except Exception:
@@ -168,17 +178,17 @@ class UpdateCompAuthenticationsWithUploadsCommand(BaseCommand):
     Text:
       - id (UUID, required)
       - name?, description?, template_id?, tags?
+      - group_id?, sub_type?
       - metadata? (JSON object or JSON string) -> stored in metadata_json (full replacement)
       - clear_thumbnail? ("1"/"true")
       - clear_images? ("1"/"true")
       - remove_image_keys[]?
-      - clear_file_links? ("1"/"true")
-      - remove_file_link_keys[]?  (login|register|logout_button|user_profile)
+      - clear_file_link? ("1"/"true")
 
     Files:
-      - thumbnail (single image)              -> replaces thumbnail
-      - images (multiple images)              -> appended to images[]
-      - login/register/logout_button/user_profile (single each) -> set/replace in file_links map
+      - thumbnail (single image) -> replaces thumbnail
+      - images (multiple images) -> appended to images[]
+      - file (single)            -> replaces file_link
     """
     name = "components/authentications/update_with_uploads"
     schema = UpdateCompAuthenticationsPayload
@@ -190,10 +200,7 @@ class UpdateCompAuthenticationsWithUploadsCommand(BaseCommand):
     file_fields = [
         ("thumbnail", False),
         ("images", True),
-        ("login", False),
-        ("register", False),
-        ("logout_button", False),
-        ("user_profile", False),
+        ("file", False),  # NEW: single file_link
     ]
 
     base_folder = "uploads"
@@ -203,10 +210,7 @@ class UpdateCompAuthenticationsWithUploadsCommand(BaseCommand):
         payload: UpdateCompAuthenticationsPayload,
         thumbnail: Optional[UploadFile] = None,
         images: Optional[List[UploadFile]] = None,
-        login: Optional[UploadFile] = None,
-        register: Optional[UploadFile] = None,
-        logout_button: Optional[UploadFile] = None,
-        user_profile: Optional[UploadFile] = None,
+        file: Optional[UploadFile] = None,  # NEW
         user_id: Optional[str] = None,
     ):
         t0 = time.monotonic()
@@ -253,13 +257,19 @@ class UpdateCompAuthenticationsWithUploadsCommand(BaseCommand):
                 ct = _resolve_content_type(f)
                 return data, ct
 
-            async def _upload_one(f: Optional[UploadFile], subfolder: str, default_stem: str, image: bool = False):
+            async def _upload_one(
+                f: Optional[UploadFile],
+                subfolder: str,
+                default_stem: str,
+                image: bool = False
+            ) -> Optional[Dict[str, Any]]:
                 if not f:
                     return None
                 if image:
                     _, ct = await _read_and_check_img(f)
                 else:
                     _, ct = await _read_and_check_any(f)
+
                 fname = make_uuid_name(f.filename, default_stem)
                 res = await asyncio.to_thread(
                     gcs.upload_fileobj, f.file, fname, f"{dest_prefix}/{subfolder}", False, ct
@@ -287,6 +297,12 @@ class UpdateCompAuthenticationsWithUploadsCommand(BaseCommand):
             if payload.tags is not None:
                 row.tags = _normalize_tags(payload.tags)
 
+            # NEW fields
+            if payload.group_id is not None:
+                row.group_id = payload.group_id
+            if payload.sub_type is not None:
+                row.sub_type = payload.sub_type
+
             # metadata: if provided, full replacement of metadata_json
             if payload.metadata is not None:
                 row.metadata_json = payload.metadata or None
@@ -312,28 +328,14 @@ class UpdateCompAuthenticationsWithUploadsCommand(BaseCommand):
                         imgs.append(meta["key"])
             row.images = imgs or None
 
-            # ---------- file_links (map) ----------
-            links: Dict[str, Any] = dict(row.file_links or {})
-            if _is_truthy(payload.clear_file_links):
-                links = {}
+            # ---------- file_link (single) ----------
+            if _is_truthy(payload.clear_file_link):
+                row.file_link = None
+            if file:
+                meta = await _upload_one(file, "file", "file", image=False)
+                if meta:
+                    row.file_link = meta["key"]
 
-            if payload.remove_file_link_keys:
-                for k in payload.remove_file_link_keys:
-                    if k in links:
-                        links.pop(k, None)
-
-            for k, uf in {
-                "login": login,
-                "register": register,
-                "logout_button": logout_button,
-                "user_profile": user_profile,
-            }.items():
-                if uf:
-                    meta = await _upload_one(uf, "auth", k, image=False)
-                    if meta:
-                        links[k] = meta
-
-            row.file_links = links or None
             row.updated_by = user_id
 
             db.add(row)
@@ -341,7 +343,8 @@ class UpdateCompAuthenticationsWithUploadsCommand(BaseCommand):
             db.refresh(row)
 
             # ---------- signed urls (best-effort) ----------
-            signed = {"thumbnail": None, "images": [], "file_links": {}}
+            signed = {"thumbnail": None, "images": [], "file_link": None}
+
             if row.thumbnail:
                 try:
                     signed["thumbnail"] = gcs.signed_get_url(row.thumbnail, expires_seconds=3600)
@@ -354,11 +357,11 @@ class UpdateCompAuthenticationsWithUploadsCommand(BaseCommand):
                 except Exception:
                     signed["images"].append(f"https://storage.googleapis.com/{gcs.bucket_name}/{k}")
 
-            for key, meta in (row.file_links or {}).items():
+            if row.file_link:
                 try:
-                    signed["file_links"][key] = gcs.signed_get_url(meta["key"], expires_seconds=3600)
+                    signed["file_link"] = gcs.signed_get_url(row.file_link, expires_seconds=3600)
                 except Exception:
-                    signed["file_links"][key] = f"https://storage.googleapis.com/{gcs.bucket_name}/{meta['key']}"
+                    signed["file_link"] = f"https://storage.googleapis.com/{gcs.bucket_name}/{row.file_link}"
 
             return {
                 "status": "ok",
@@ -366,6 +369,7 @@ class UpdateCompAuthenticationsWithUploadsCommand(BaseCommand):
                 "gcs": signed,
                 "perf_ms": round((time.monotonic() - t0) * 1000, 2),
             }
+
         except HTTPException:
             db.rollback()
             raise
@@ -376,12 +380,7 @@ class UpdateCompAuthenticationsWithUploadsCommand(BaseCommand):
         finally:
             db.close()
             # Close uploads if any
-            all_files: List[UploadFile] = [thumbnail] + (images or []) + [
-                login,
-                register,
-                logout_button,
-                user_profile,
-            ]
+            all_files: List[Optional[UploadFile]] = [thumbnail, file] + (images or [])
             for uf in all_files:
                 try:
                     if uf and getattr(uf, "file", None) and not uf.file.closed:
@@ -400,7 +399,12 @@ def _comp_auth_to_dict(m: CompAuthentication) -> dict:
         "thumbnail": getattr(m, "thumbnail", None),
         "images": getattr(m, "images", None),
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,
-        "file_links": getattr(m, "file_links", None) or {},
+
+        # NEW
+        "group_id": str(m.group_id) if getattr(m, "group_id", None) else None,
+        "sub_type": getattr(m, "sub_type", None),
+        "file_link": getattr(m, "file_link", None),
+
         "metadata": getattr(m, "metadata_json", None) or {},
         "tags": getattr(m, "tags", []) or [],
         "created_by": m.created_by,

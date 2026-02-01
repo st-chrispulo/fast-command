@@ -1,12 +1,12 @@
 # models/components/tbl_comp_contents.py
-from sqlalchemy import (
-    Column, String, Text, DateTime, Integer, ForeignKey, Index, func, Table
-)
+
+from sqlalchemy import Column, String, Text, DateTime, Integer, ForeignKey, Index, func, Table
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 
 Base = declarative_base()
 
+# Minimal FK stub so create_all() resolves tbl_users
 tbl_users = Table(
     "tbl_users",
     Base.metadata,
@@ -24,6 +24,7 @@ class CompContent(Base):
         server_default=func.gen_random_uuid(),
         nullable=False,
     )
+
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
 
@@ -41,19 +42,19 @@ class CompContent(Base):
     thumbnail = Column(Text, nullable=True)
     images = Column(JSONB, nullable=True)
 
-    # NEW: metadata JSONB column (DB name "metadata", attribute name metadata_json)
+    # DB column name is "metadata", python attribute is metadata_json
     metadata_json = Column("metadata", JSONB, nullable=True)
 
     template_id = Column(UUID(as_uuid=True), nullable=True)
     file_link = Column(Text, nullable=True)
 
+    # ✅ NEW FIELDS
+    group_id = Column(UUID(as_uuid=True), nullable=True)
+    sub_type = Column(String(255), nullable=True)
+
     tags = Column(ARRAY(String), nullable=False, server_default="{}")
 
-    created_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -68,8 +69,10 @@ class CompContent(Base):
         Index("idx_tbl_comp_contents_created_by", "created_by"),
         Index("idx_tbl_comp_contents_updated_by", "updated_by"),
         Index("idx_tbl_comp_contents_tags_gin", "tags", postgresql_using="gin"),
-        # Optional if you add the GIN index for metadata in the migration:
-        # Index("idx_tbl_comp_contents_metadata_gin", "metadata", postgresql_using="gin"),
+
+        # ✅ NEW INDEXES (match migration 045)
+        Index("idx_tbl_comp_contents_group_id", "group_id"),
+        Index("idx_tbl_comp_contents_sub_type", "sub_type"),
     )
 
 

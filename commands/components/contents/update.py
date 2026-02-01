@@ -6,7 +6,8 @@ import mimetypes
 import time
 import asyncio
 from uuid import uuid4
-from typing import Optional, List, Literal, Dict, Any
+from typing import Optional, List, Literal, Any
+from uuid import UUID
 
 from fastapi import UploadFile, HTTPException
 from pydantic import BaseModel, field_validator, Field
@@ -95,19 +96,22 @@ class UpdateCompContentsPayload(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
 
+    # ✅ NEW editable fields
+    group_id: Optional[UUID] = None
+    sub_type: Optional[str] = None
+
     # Tags editing
-    # CHANGED: accept a single comma-separated string (e.g., "x, y, z")
     tags: Optional[str] = None
     tags_mode: Literal["append", "replace", "remove"] = Field(default="replace")
-    tags_clear: bool = False  # clear all tags regardless of tags/tags_mode
+    tags_clear: bool = False
 
     # Images behavior (for file uploads only)
     images_mode: Literal["append", "replace"] = Field(default="append")
 
-    # Explicit clear flags (default False -> do nothing if file not provided)
+    # Explicit clear flags
     thumbnail_clear: bool = False
-    images_clear: bool = False         # clear all existing images (unless new ones provided with replace)
-    file_link_clear: bool = False      # clear main file (attachment)
+    images_clear: bool = False
+    file_link_clear: bool = False
 
     # metadata (maps to CompContent.metadata_json / JSONB)
     metadata: Optional[Any] = None
@@ -122,32 +126,37 @@ class UpdateCompContentsPayload(BaseModel):
     def _desc_trim(cls, v):
         return v.strip() if isinstance(v, str) else v
 
+    @field_validator("sub_type", mode="before")
+    @classmethod
+    def _sub_type_in(cls, v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
+
     @field_validator("tags", mode="before")
     @classmethod
     def _tags_in(cls, v):
-        # coerce to a single trimmed string or None
         if v is None:
             return None
         return str(v).strip() or None
 
+    # ✅ multipart-safe: allow "" for UUID -> None
+    @field_validator("group_id", mode="before")
+    @classmethod
+    def _uuid_empty_to_none(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
     @field_validator("metadata", mode="before")
     @classmethod
     def _metadata_in(cls, v):
-        """
-        Accept dict, None, or JSON string and normalize to dict/None.
-
-        This mirrors the create_with_uploads behavior so that multipart/form-data
-        requests that send:
-
-            metadata = '{"contentType":"view","outputs":[{"key":"Output"}]}'
-
-        are parsed into a Python dict before hitting the DB.
-        """
-        # Already a dict or None → ok
         if v is None or isinstance(v, dict):
             return v
 
-        # Most common case: JSON string from FormData
         if isinstance(v, str):
             raw = v.strip()
             if not raw:
@@ -160,10 +169,8 @@ class UpdateCompContentsPayload(BaseModel):
             if isinstance(parsed, dict):
                 return parsed
 
-            # Valid JSON but not an object, wrap to keep column shape consistent
             return {"value": parsed}
 
-        # Fallback: something mapping-like; try to coerce
         try:
             return dict(v)
         except Exception:
@@ -171,29 +178,6 @@ class UpdateCompContentsPayload(BaseModel):
 
 
 class UpdateComponentWithUploadsCommand(BaseCommand):
-    """
-    Partially updates a CompContent row. Only these fields are mutable:
-      - name, description, tags, thumbnail, images, file_link, metadata_json, updated_by
-
-    Rules:
-      - If no file is attached and no *_clear flag is set, the file fields are left unchanged.
-      - To clear a file field without uploading, set its clear flag to True.
-      - For images:
-          * images_mode = "append" (default): appends newly uploaded images.
-          * images_mode = "replace": replaces current images with only the newly uploaded ones.
-          * images_clear = True: clears all existing images.
-      - For tags (TEXT[]):
-          * tags_clear = True: clears all existing tags.
-          * tags_mode = "replace": replace with provided tags.
-          * tags_mode = "append": add provided tags (no duplicates).
-          * tags_mode = "remove": remove any provided tags from existing.
-      - For main file:
-          * multipart field is "attachment"
-          * uploaded file is stored to GCS and its key is saved in row.file_link
-      - For metadata_json:
-          * if `metadata` is provided, it REPLACES the existing metadata_json.
-    """
-
     name = "components/contents/update_with_uploads"
     schema = UpdateCompContentsPayload
     require_auth = True
@@ -201,7 +185,6 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
     type = "file_upload"
     group = "Content"
 
-    # IMPORTANT: these names must match the multipart fields, not the JSON body
     file_fields = [
         ("thumbnail", False),
         ("images", True),
@@ -210,11 +193,10 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
 
     base_folder = "uploads"
 
-    # Limits + types
     MAX_IMAGE_MB = 50
     MAX_FILE_MB = 200
     IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
-    ANY_FILE_TYPES = None  # allow any
+    ANY_FILE_TYPES = None
 
     async def execute(
         self,
@@ -225,11 +207,16 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
         user_id: Optional[str] = None,
     ):
         start_t = time.monotonic()
-        logger.info("[update_with_uploads] start id=%s user_id=%s", payload.id, user_id)
+        logger.info(
+            "[update_with_uploads] start id=%s user_id=%s group_id=%s sub_type=%s",
+            payload.id,
+            user_id,
+            getattr(payload, "group_id", None),
+            getattr(payload, "sub_type", None),
+        )
 
         db = SessionLocal()
         try:
-            # Fetch row; ids are UUID in DB, but we store as text to query
             row: Optional[CompContent] = db.query(CompContent).get(payload.id)
             if not row:
                 raise HTTPException(status_code=404, detail="Content not found")
@@ -261,7 +248,6 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
                 return data, ct
 
             async def _upload_and_return_key(fileobj, filename: str, key_prefix: str, content_type: str) -> str:
-                # Try positional signature first; fallback to kwargs
                 try:
                     res = await asyncio.to_thread(
                         gcs.upload_fileobj,
@@ -284,7 +270,6 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
                 if not res or not res.get("ok"):
                     raise RuntimeError("Upload failed")
 
-                # IMPORTANT: store the GCS key, not a full URL
                 return res["key"]
 
             # -------- scalar fields (leave unchanged if not provided) --------
@@ -293,7 +278,15 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
             if payload.description is not None:
                 row.description = payload.description
 
-            # -------- tags (append/replace/remove/clear) --------
+            # ✅ NEW: group_id / sub_type (partial update)
+            # If field is omitted -> no change
+            # If provided as "" -> validator converts to None -> clears column
+            if payload.group_id is not None or ("group_id" in getattr(payload, "__pydantic_fields_set__", set())):
+                row.group_id = payload.group_id
+            if payload.sub_type is not None or ("sub_type" in getattr(payload, "__pydantic_fields_set__", set())):
+                row.sub_type = payload.sub_type
+
+            # -------- tags --------
             current_tags: List[str] = list(row.tags or [])
             if payload.tags_clear:
                 current_tags = []
@@ -313,8 +306,6 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
                     remove_set = set(incoming)
                     current_tags = [t for t in current_tags if t not in remove_set]
             else:
-                # If tags_mode=replace AND user sent empty string and not tags_clear,
-                # interpret as "no-op" (do not wipe). Leave as-is unless tags_clear was set.
                 if payload.tags_mode == "replace" and not payload.tags_clear:
                     pass
 
@@ -325,7 +316,7 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
             if payload.metadata is not None:
                 row.metadata_json = payload.metadata or None
 
-            # -------- thumbnail (replace only if file provided; clear only if flag True) --------
+            # -------- thumbnail --------
             if payload.thumbnail_clear:
                 row.thumbnail = None
 
@@ -361,13 +352,20 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
                     new_image_keys.append(img_key)
 
             if new_image_keys:
-                # NOTE: current implementation always replaces with new set when any new images are uploaded
-                current_images = new_image_keys
+                if payload.images_mode == "replace":
+                    current_images = new_image_keys
+                else:  # append
+                    # de-dupe while preserving order
+                    seen = set(current_images)
+                    for k in new_image_keys:
+                        if k not in seen:
+                            current_images.append(k)
+                            seen.add(k)
 
             if payload.images_clear or new_image_keys or (row.images is None):
                 row.images = current_images
 
-            # -------- main file (file_link) via "attachment" --------
+            # -------- main file (file_link) --------
             if payload.file_link_clear:
                 row.file_link = None
 
@@ -382,7 +380,12 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
                 )
                 row.file_link = att_key
 
-            row.updated_by = user_id
+            # ✅ updated_by is Integer column
+            if user_id is not None:
+                try:
+                    row.updated_by = int(user_id)
+                except Exception:
+                    raise HTTPException(status_code=400, detail="Invalid user context (user_id must be int-like).")
 
             # -------- persist --------
             t0 = time.monotonic()
@@ -391,10 +394,7 @@ class UpdateComponentWithUploadsCommand(BaseCommand):
             db.refresh(row)
             logger.info("[update_with_uploads] DB commit elapsed=%.3fs id=%s", time.monotonic() - t0, row.id)
 
-            elapsed_total = time.monotonic() - start_t
-            logger.info("[update_with_uploads] finished total_elapsed=%.3fs id=%s", elapsed_total, row.id)
-
-            # Build signed URLs for convenience (like create_with_uploads)
+            # Build signed URLs (best-effort)
             signed_thumb = None
             signed_imgs: List[str] = []
             signed_file = None
@@ -466,6 +466,11 @@ def _comp_contents_to_dict(m: CompContent) -> dict:
         "file_link": m.file_link,
         "tags": getattr(m, "tags", []) or [],
         "metadata": getattr(m, "metadata_json", None) or {},
+
+        # ✅ NEW
+        "group_id": str(getattr(m, "group_id", None)) if getattr(m, "group_id", None) else None,
+        "sub_type": getattr(m, "sub_type", None),
+
         "created_by": m.created_by,
         "updated_by": m.updated_by,
         "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,

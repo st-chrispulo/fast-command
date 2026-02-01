@@ -6,6 +6,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 from pydantic import BaseModel, field_validator, model_validator
+from sqlalchemy import func
 
 from commands.base_command import BaseCommand
 from auth.db import SessionLocal
@@ -33,8 +34,8 @@ class DeleteCompAuthenticationsPayload(BaseModel):
     ids: Optional[List[UUID]] = None
 
     # Optional behavior flags
-    hard_delete_files: bool = True         # also delete GCS objects (thumbnail/images/file_links)
-    ignore_missing: bool = True            # skip unknown IDs instead of 404
+    hard_delete_files: bool = True  # also delete GCS objects (thumbnail/images/file_link)
+    ignore_missing: bool = True     # skip unknown IDs instead of 404
 
     @field_validator("ids", mode="before")
     @classmethod
@@ -52,52 +53,46 @@ class DeleteCompAuthenticationsPayload(BaseModel):
         has_id = self.id is not None
         has_ids = bool(self.ids)
         if has_id == has_ids:
-            # both provided or none provided
             raise ValueError("Provide either 'id' or 'ids' (exclusively).")
         return self
 
 
 def _collect_all_keys(row: CompAuthentication) -> Set[str]:
+    """
+    Updated model:
+      - thumbnail (TEXT)
+      - images (JSONB array of keys)
+      - file_link (TEXT, single key)
+    """
     keys: Set[str] = set()
-    if getattr(row, "thumbnail", None):
-        keys.add(row.thumbnail)
+
+    thumb = getattr(row, "thumbnail", None)
+    if thumb:
+        keys.add(thumb)
+
     for k in getattr(row, "images", None) or []:
         if k:
             keys.add(k)
-    # file_links is a mapping key -> { key, filename, content_type, size }
-    fl = getattr(row, "file_links", None) or {}
-    for meta in fl.values():
-        try:
-            k = meta.get("key")
-            if k:
-                keys.add(k)
-        except Exception:
-            # if meta isn't a dict
-            pass
+
+    file_key = getattr(row, "file_link", None)
+    if file_key:
+        keys.add(file_key)
+
     return keys
+
+
+def _is_utility_sub_type(row: CompAuthentication) -> bool:
+    return (getattr(row, "sub_type", None) or "").strip().lower() == "utility"
 
 
 class DeleteCompAuthenticationsCommand(BaseCommand):
     """
     Delete authentication component(s).
 
-    Request:
-      - id: UUID (single)        OR
-      - ids: [UUID, ...] (bulk)
-
-    Options:
-      - hard_delete_files: bool = True
-      - ignore_missing: bool = True
-
-    Response:
-      {
-        "status": "ok",
-        "deleted_ids": [...],
-        "not_found_ids": [...],
-        "files_deleted": n,
-        "errors": [ { "id": "...", "error": "..." } ],
-        "perf_ms": 12.34
-      }
+    Catch rule:
+      - If sub_type == "utility" AND group_id is shared by other rows,
+        block deletion and return an error saying there are still other
+        components using it.
     """
     name = "components/authentications/delete"
     schema = DeleteCompAuthenticationsPayload
@@ -116,14 +111,11 @@ class DeleteCompAuthenticationsCommand(BaseCommand):
             raise HTTPException(status_code=401, detail="Unauthorized (no user context).")
 
         # Normalize IDs list
-        ids: List[str] = []
-        if payload.id:
-            ids = [str(payload.id)]
-        else:
-            ids = [str(x) for x in (payload.ids or [])]
+        ids: List[str] = [str(payload.id)] if payload.id else [str(x) for x in (payload.ids or [])]
 
         db = SessionLocal()
         gcs = get_gcs()
+
         files_to_delete: Set[str] = set()
         deleted_ids: List[str] = []
         not_found_ids: List[str] = []
@@ -143,10 +135,42 @@ class DeleteCompAuthenticationsCommand(BaseCommand):
                     not_found_ids.append(_id)
 
             if not payload.ignore_missing and not_found_ids:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"IDs not found: {', '.join(not_found_ids)}"
-                )
+                raise HTTPException(status_code=404, detail=f"IDs not found: {', '.join(not_found_ids)}")
+
+            # ---- Catch rule check (utility + shared group_id) ----
+            # We do this BEFORE deleting anything.
+            utility_group_ids: Set[str] = set()
+            for r in rows:
+                if _is_utility_sub_type(r) and getattr(r, "group_id", None):
+                    utility_group_ids.add(str(r.group_id))
+
+            if utility_group_ids:
+                # Count occurrences of these group_ids in this table.
+                # If count > number of rows we are deleting for that group_id,
+                # it means other components still reference it.
+                for gid in utility_group_ids:
+                    total_count = (
+                        db.query(func.count(CompAuthentication.id))
+                        .filter(CompAuthentication.group_id == gid)
+                        .scalar()
+                        or 0
+                    )
+
+                    deleting_count = sum(
+                        1
+                        for r in rows
+                        if getattr(r, "group_id", None) is not None and str(r.group_id) == gid
+                    )
+
+                    # If there will still be remaining rows with same group_id after this delete
+                    if total_count > deleting_count:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                f"Cannot delete: group_id {gid} is still used by other components "
+                                f"({total_count - deleting_count} remaining)."
+                            ),
+                        )
 
             # Collect files to delete (before DB delete)
             if payload.hard_delete_files:
@@ -172,7 +196,6 @@ class DeleteCompAuthenticationsCommand(BaseCommand):
                         gcs.delete_object(key)
                         files_deleted += 1
                     except Exception:
-                        # Log but don't fail the whole request
                         logger.warning("[authentications:delete] couldn't delete GCS key=%s", key)
 
             return {

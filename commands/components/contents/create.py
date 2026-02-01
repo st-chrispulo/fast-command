@@ -6,11 +6,11 @@ import mimetypes
 import time
 import asyncio
 from uuid import uuid4
-from typing import Optional, List, Any, Dict
+from typing import Optional, List, Any
+from uuid import UUID
+
 from fastapi import UploadFile, HTTPException
 from pydantic import BaseModel, field_validator
-from uuid import UUID
-from datetime import datetime
 
 from commands.base_command import BaseCommand
 from auth.db import SessionLocal
@@ -73,7 +73,6 @@ def _normalize_tags(value) -> List[str]:
     if isinstance(value, str):
         parts = [p.strip() for p in value.split(",")]
     elif isinstance(value, (list, tuple, set)):
-        # tolerate accidental list input; we still trim and dedupe
         parts = [str(p).strip() for p in value]
     else:
         parts = []
@@ -91,9 +90,12 @@ class CreateCompContentsPayload(BaseModel):
     name: str
     description: Optional[str] = None
     template_id: Optional[UUID] = None
-    # tags as a single string (e.g., "x, y, z")
+
+    # ✅ NEW
+    group_id: Optional[UUID] = None
+    sub_type: Optional[str] = None
+
     tags: Optional[str] = None
-    # metadata: comes from multipart as a JSON string, but we want dict in code
     metadata: Optional[Any] = None
 
     @field_validator("name")
@@ -112,10 +114,28 @@ class CreateCompContentsPayload(BaseModel):
     @field_validator("tags", mode="before")
     @classmethod
     def _tags_in(cls, v):
-        # Accept None or string-ish; coerce non-strings to string just in case
         if v is None:
             return None
-        return str(v).strip()
+        s = str(v).strip()
+        return s or None
+
+    @field_validator("sub_type", mode="before")
+    @classmethod
+    def _sub_type_in(cls, v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
+
+    # ✅ important for multipart/form-data: "" -> None
+    @field_validator("template_id", "group_id", mode="before")
+    @classmethod
+    def _uuid_empty_to_none(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     @field_validator("metadata", mode="before")
     @classmethod
@@ -123,16 +143,11 @@ class CreateCompContentsPayload(BaseModel):
         """
         Accept dict, None, or JSON string and normalize to dict/None.
 
-        This is important because multipart/form-data always gives us strings
-        for non-file fields, e.g.:
-
-            metadata = '{"contentType":"view","outputs":[{"key":"Output"}]}'
+        Important for multipart/form-data (FormData sends strings).
         """
-        # Already correct types
         if v is None or isinstance(v, dict):
             return v
 
-        # Most common case: JSON string from FormData
         if isinstance(v, str):
             raw = v.strip()
             if not raw:
@@ -145,11 +160,8 @@ class CreateCompContentsPayload(BaseModel):
             if isinstance(parsed, dict):
                 return parsed
 
-            # Valid JSON but not an object (e.g. list/string/number)
-            # Wrap to keep DB column shape consistent
             return {"value": parsed}
 
-        # Fallback: something like a mapping / object; try to coerce to dict
         try:
             return dict(v)
         except Exception:
@@ -163,18 +175,6 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
       - thumbnail: single image UploadFile
       - images: list of image UploadFile (multi-file)
       - attachment: single file UploadFile
-
-    Files are uploaded to GCS via get_gcs().upload_fileobj(...) under:
-      <base_folder>/<content_id>/thumbnail
-      <base_folder>/<content_id>/images
-      <base_folder>/<content_id>/files
-
-    The DB row's fields:
-      - thumbnail -> object key (string) or None
-      - images -> list of object keys or None
-      - file_link -> object key or None
-      - tags -> TEXT[] (list[str])
-      - metadata_json -> JSONB (dict) or None
     """
 
     name = "components/contents/create_with_uploads"
@@ -184,21 +184,18 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
     type = "file_upload"
     group = "Content"
 
-    # Explicitly declare file fields so the dynamic router can expose them deterministically.
-    # Each tuple: (field_name, is_multiple)
     file_fields = [
         ("thumbnail", False),
-        ("images", True),        # multiple UploadFile -> multi-file picker in Swagger
+        ("images", True),
         ("attachment", False),
     ]
 
     base_folder = "uploads"
 
-    # Limits + types
     MAX_IMAGE_MB = 50
     MAX_FILE_MB = 200
     IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
-    ANY_FILE_TYPES = None  # allow any mime
+    ANY_FILE_TYPES = None
 
     async def execute(
         self,
@@ -209,22 +206,25 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
         user_id: Optional[str] = None,
     ):
         start_t = time.monotonic()
-        logger.info("[create_with_uploads] start - name=%s, user_id=%s", getattr(payload, "name", None), user_id)
+        logger.info(
+            "[create_with_uploads] start - name=%s user_id=%s group_id=%s sub_type=%s",
+            getattr(payload, "name", None),
+            user_id,
+            getattr(payload, "group_id", None),
+            getattr(payload, "sub_type", None),
+        )
 
-        # GCS singleton
         gcs = get_gcs()
 
-        # Build content id and destination prefixes
+        # NOTE: this folder id is separate from DB row id (fine; used for upload grouping)
         content_id = str(uuid4())
         dest_prefix = f"{self.base_folder}/{content_id}"
         logger.debug("[create_with_uploads] content_id=%s dest_prefix=%s", content_id, dest_prefix)
 
-        # Results to be stored in DB (GCS object KEYS, not URLs)
         thumbnail_key: Optional[str] = None
         images_keys: Optional[List[str]] = None
         attachment_key: Optional[str] = None
 
-        # Helper: read and basic validate (keeps original .file pointer)
         async def _read_and_check(f: UploadFile, max_mb: int, allowed: Optional[set]):
             if f is None:
                 return None, None
@@ -238,144 +238,112 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
             ct = _resolve_content_type(f)
             size = len(data)
             logger.debug(
-                "[create_with_uploads] _read_and_check file=%s size=%d bytes ct=%s elapsed=%.3fs",
+                "[create_with_uploads] _read_and_check file=%s size=%d ct=%s elapsed=%.3fs",
                 getattr(f, "filename", None),
                 size,
                 ct,
                 time.monotonic() - t0,
             )
             if size > max_mb * 1024 * 1024:
-                logger.warning(
-                    "[create_with_uploads] file too large file=%s size=%d limit_mb=%s",
-                    getattr(f, "filename", None),
-                    size,
-                    max_mb,
-                )
                 raise ValueError(f"File '{f.filename}' exceeds {max_mb}MB limit")
             if allowed is not None and ct not in allowed:
-                logger.warning(
-                    "[create_with_uploads] unsupported content type file=%s ct=%s",
-                    getattr(f, "filename", None),
-                    ct,
-                )
                 raise ValueError(f"Unsupported content type '{ct}' for '{f.filename}'")
             return data, ct
 
-        # Upload thumbnail (single image)
+        # Upload thumbnail
         if thumbnail:
             logger.info("[create_with_uploads] processing thumbnail=%s", getattr(thumbnail, "filename", None))
-            try:
-                _, thumb_ct = await _read_and_check(thumbnail, self.MAX_IMAGE_MB, self.IMAGE_TYPES)
-                thumb_name = make_uuid_name(thumbnail.filename, "thumbnail")
-                key_prefix = f"{dest_prefix}/thumbnail"
-                logger.debug("[create_with_uploads] uploading thumbnail name=%s key_prefix=%s", thumb_name, key_prefix)
-                t0 = time.monotonic()
-                res = await asyncio.to_thread(
-                    gcs.upload_fileobj,
-                    thumbnail.file,
-                    thumb_name,
-                    key_prefix,
-                    False,
-                    thumb_ct,
-                ) if hasattr(gcs, "upload_fileobj") else await asyncio.to_thread(
-                    gcs.upload_fileobj,
-                    fileobj=thumbnail.file,
-                    filename=thumb_name,
-                    dest_prefix=key_prefix,
-                    public=False,
-                    content_type=thumb_ct,
-                )
-                logger.info(
-                    "[create_with_uploads] thumbnail uploaded elapsed=%.3fs ok=%s",
-                    time.monotonic() - t0,
-                    res.get("ok"),
-                )
-                thumbnail_key = res["key"]
-            except Exception as e:
-                logger.exception("[create_with_uploads] thumbnail upload failed: %s", e)
-                raise
+            _, thumb_ct = await _read_and_check(thumbnail, self.MAX_IMAGE_MB, self.IMAGE_TYPES)
+            thumb_name = make_uuid_name(thumbnail.filename, "thumbnail")
+            key_prefix = f"{dest_prefix}/thumbnail"
+            t0 = time.monotonic()
+            res = await asyncio.to_thread(
+                gcs.upload_fileobj,
+                thumbnail.file,
+                thumb_name,
+                key_prefix,
+                False,
+                thumb_ct,
+            ) if hasattr(gcs, "upload_fileobj") else await asyncio.to_thread(
+                gcs.upload_fileobj,
+                fileobj=thumbnail.file,
+                filename=thumb_name,
+                dest_prefix=key_prefix,
+                public=False,
+                content_type=thumb_ct,
+            )
+            logger.info("[create_with_uploads] thumbnail uploaded elapsed=%.3fs ok=%s", time.monotonic() - t0, res.get("ok"))
+            thumbnail_key = res["key"]
 
-        # Upload images (multiple)
+        # Upload images
         if images:
             logger.info("[create_with_uploads] processing %d images", len(images))
             for idx, img in enumerate(images):
-                try:
-                    _, img_ct = await _read_and_check(img, self.MAX_IMAGE_MB, self.IMAGE_TYPES)
-                    img_name = make_uuid_name(img.filename, f"img{idx:03d}")
-                    key_prefix = f"{dest_prefix}/images"
-                    logger.debug("[create_with_uploads] uploading image idx=%d name=%s", idx, img_name)
-                    t0 = time.monotonic()
-                    res = await asyncio.to_thread(
-                        gcs.upload_fileobj,
-                        img.file,
-                        img_name,
-                        key_prefix,
-                        False,
-                        img_ct,
-                    ) if hasattr(gcs, "upload_fileobj") else await asyncio.to_thread(
-                        gcs.upload_fileobj,
-                        fileobj=img.file,
-                        filename=img_name,
-                        dest_prefix=key_prefix,
-                        public=False,
-                        content_type=img_ct,
-                    )
-                    if images_keys is None:
-                        images_keys = []
-                    images_keys.append(res["key"])
-                    logger.info(
-                        "[create_with_uploads] image idx=%d uploaded elapsed=%.3fs ok=%s",
-                        idx,
-                        time.monotonic() - t0,
-                        res.get("ok"),
-                    )
-                except Exception as e:
-                    logger.exception("[create_with_uploads] image idx=%d upload failed: %s", idx, e)
-                    raise
-
-        # Upload attachment (single)
-        if attachment:
-            logger.info("[create_with_uploads] processing attachment=%s", getattr(attachment, "filename", None))
-            try:
-                _, att_ct = await _read_and_check(attachment, self.MAX_FILE_MB, self.ANY_FILE_TYPES)
-                att_name = make_uuid_name(attachment.filename, "file")
-                key_prefix = f"{dest_prefix}/files"
-                logger.debug("[create_with_uploads] uploading attachment name=%s", att_name)
+                _, img_ct = await _read_and_check(img, self.MAX_IMAGE_MB, self.IMAGE_TYPES)
+                img_name = make_uuid_name(img.filename, f"img{idx:03d}")
+                key_prefix = f"{dest_prefix}/images"
                 t0 = time.monotonic()
                 res = await asyncio.to_thread(
                     gcs.upload_fileobj,
-                    attachment.file,
-                    att_name,
+                    img.file,
+                    img_name,
                     key_prefix,
                     False,
-                    att_ct,
+                    img_ct,
                 ) if hasattr(gcs, "upload_fileobj") else await asyncio.to_thread(
                     gcs.upload_fileobj,
-                    fileobj=attachment.file,
-                    filename=att_name,
+                    fileobj=img.file,
+                    filename=img_name,
                     dest_prefix=key_prefix,
                     public=False,
-                    content_type=att_ct,
+                    content_type=img_ct,
                 )
-                attachment_key = res["key"]
-                logger.info(
-                    "[create_with_uploads] attachment uploaded elapsed=%.3fs ok=%s",
-                    time.monotonic() - t0,
-                    res.get("ok"),
-                )
-            except Exception as e:
-                logger.exception("[create_with_uploads] attachment upload failed: %s", e)
-                raise
+                if images_keys is None:
+                    images_keys = []
+                images_keys.append(res["key"])
+                logger.info("[create_with_uploads] image idx=%d uploaded elapsed=%.3fs ok=%s", idx, time.monotonic() - t0, res.get("ok"))
+
+        # Upload attachment
+        if attachment:
+            logger.info("[create_with_uploads] processing attachment=%s", getattr(attachment, "filename", None))
+            _, att_ct = await _read_and_check(attachment, self.MAX_FILE_MB, self.ANY_FILE_TYPES)
+            att_name = make_uuid_name(attachment.filename, "file")
+            key_prefix = f"{dest_prefix}/files"
+            t0 = time.monotonic()
+            res = await asyncio.to_thread(
+                gcs.upload_fileobj,
+                attachment.file,
+                att_name,
+                key_prefix,
+                False,
+                att_ct,
+            ) if hasattr(gcs, "upload_fileobj") else await asyncio.to_thread(
+                gcs.upload_fileobj,
+                fileobj=attachment.file,
+                filename=att_name,
+                dest_prefix=key_prefix,
+                public=False,
+                content_type=att_ct,
+            )
+            attachment_key = res["key"]
+            logger.info("[create_with_uploads] attachment uploaded elapsed=%.3fs ok=%s", time.monotonic() - t0, res.get("ok"))
 
         # Persist DB row
         db = SessionLocal()
         try:
-            created_by = user_id
-            updated_by = user_id
-
-            if self.require_auth and created_by is None:
+            if self.require_auth and user_id is None:
                 logger.warning("[create_with_uploads] unauthorized call - no user context")
                 raise HTTPException(status_code=401, detail="Unauthorized (no user context).")
+
+            # ✅ created_by/updated_by are Integer columns
+            created_by = None
+            updated_by = None
+            if user_id is not None:
+                try:
+                    created_by = int(user_id)
+                    updated_by = int(user_id)
+                except Exception:
+                    raise HTTPException(status_code=400, detail="Invalid user context (user_id must be int-like).")
 
             row = CompContent(
                 name=payload.name,
@@ -387,37 +355,37 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
                 created_by=created_by,
                 updated_by=updated_by,
                 tags=_normalize_tags(payload.tags),
-                # store as JSONB via metadata_json
                 metadata_json=payload.metadata or None,
+
+                # ✅ NEW
+                group_id=payload.group_id,
+                sub_type=payload.sub_type,
             )
 
             logger.debug(
-                "[create_with_uploads] inserting DB row name=%s created_by=%s tags=%s",
+                "[create_with_uploads] inserting DB row name=%s created_by=%s group_id=%s sub_type=%s",
                 payload.name,
                 created_by,
-                payload.tags or [],
+                payload.group_id,
+                payload.sub_type,
             )
+
             t0 = time.monotonic()
             db.add(row)
             db.commit()
             db.refresh(row)
-            logger.info(
-                "[create_with_uploads] DB commit elapsed=%.3fs id=%s",
-                time.monotonic() - t0,
-                getattr(row, "id", None),
-            )
-
-            elapsed_total = time.monotonic() - start_t
-            logger.info("[create_with_uploads] finished total_elapsed=%.3fs content_id=%s", elapsed_total, content_id)
+            logger.info("[create_with_uploads] DB commit elapsed=%.3fs id=%s", time.monotonic() - t0, getattr(row, "id", None))
 
             signed_thumb = None
             signed_imgs = []
             signed_attach = None
+
             try:
                 if thumbnail_key:
                     signed_thumb = gcs.signed_get_url(thumbnail_key, expires_seconds=3600)
             except Exception:
                 pass
+
             try:
                 for k in images_keys or []:
                     try:
@@ -426,6 +394,7 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
                         signed_imgs.append(f"https://storage.googleapis.com/{gcs.bucket_name}/{k}")
             except Exception:
                 pass
+
             try:
                 if attachment_key:
                     signed_attach = gcs.signed_get_url(attachment_key, expires_seconds=3600)
@@ -466,19 +435,25 @@ class CreateCompContentsWithUploadsCommand(BaseCommand):
             except Exception:
                 pass
 
+        logger.info("[create_with_uploads] finished total_elapsed=%.3fs", time.monotonic() - start_t)
 
-# ---------- reuse helper serializer from your original file ----------
+
 def _comp_contents_to_dict(m: CompContent) -> dict:
     return {
         "id": str(m.id) if getattr(m, "id", None) is not None else None,
         "name": m.name,
         "description": m.description,
         "thumbnail": m.thumbnail,
-        "images": m.images,  # JSONB column; already python object
+        "images": m.images,
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,
         "file_link": m.file_link,
         "tags": getattr(m, "tags", []) or [],
-        "metadata": getattr(m, "metadata_json", None) or {},  # expose metadata_json
+        "metadata": getattr(m, "metadata_json", None) or {},
+
+        # ✅ NEW
+        "group_id": str(getattr(m, "group_id", None)) if getattr(m, "group_id", None) else None,
+        "sub_type": getattr(m, "sub_type", None),
+
         "created_by": m.created_by,
         "updated_by": m.updated_by,
         "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,

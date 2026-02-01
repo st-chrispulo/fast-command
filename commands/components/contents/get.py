@@ -1,11 +1,12 @@
 # commands/components/content/get.py
+
 from typing import Optional, Any, Dict, List, Tuple, ClassVar, Set
+from uuid import UUID
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import or_, asc, desc, func
-from sqlalchemy.orm import Session
-from sqlalchemy.dialects.postgresql import array, ARRAY, TEXT  # <-- IMPORTANT
+from sqlalchemy.dialects.postgresql import array, ARRAY, TEXT
 
 from commands.base_command import BaseCommand
 from auth.db import SessionLocal
@@ -14,18 +15,67 @@ from models.components.tbl_comp_contents import CompContent
 from models.tbl_user_tags import UserTag
 
 
+# -----------------------------
+# Query schema
+# -----------------------------
 class ContentListQuery(BaseModel):
     search_term: Optional[str] = Field(default=None, description="Search over name/description")
-    sort_key: Optional[str]    = Field(default="created_at", description="Sort field")
-    sort_order: Optional[str]  = Field(default="asc", description='"asc" or "desc"')
+    sort_key: Optional[str] = Field(default="created_at", description="Sort field")
+    sort_order: Optional[str] = Field(default="asc", description='"asc" or "desc"')
     current_page: Optional[int] = Field(default=1, ge=1, description="1-based page")
-    limit: Optional[int]         = Field(default=10, ge=1, le=100, description="page size (<=100)")
-    # Comma-separated tags to filter by (ANY match)
+    limit: Optional[int] = Field(default=10, ge=1, le=100, description="page size (<=100)")
     tags: Optional[str] = Field(default=None, description="Comma-separated tag names to filter by (ANY match)")
-    # Optional filter by specific content id
-    id: Optional[str] = Field(default=None, description="Filter by specific content id")
+    id: Optional[str] = Field(default=None, description="Filter by specific content id (UUID)")
 
-    ALLOWED_SORT_KEYS: ClassVar[Set[str]] = {"id", "name", "created_at", "updated_at"}
+    # ✅ NEW / UPDATED: filters
+    group_id: Optional[str] = Field(default=None, description="Filter by group_id (UUID)")
+    group_type: Optional[str] = Field(default=None, description="Filter by group_type")
+    sub_type: Optional[str] = Field(default=None, description="Filter by sub_type")
+
+    ALLOWED_SORT_KEYS: ClassVar[Set[str]] = {
+        "id",
+        "name",
+        "created_at",
+        "updated_at",
+        # ✅ NEW (optional)
+        "group_id",
+        "group_type",
+        "sub_type",
+    }
+
+    @field_validator("id")
+    @classmethod
+    def _norm_id(cls, v: Optional[str]) -> Optional[str]:
+        if not v:
+            return None
+        v = v.strip()
+        UUID(v)
+        return v
+
+    @field_validator("group_id")
+    @classmethod
+    def _norm_group_id(cls, v: Optional[str]) -> Optional[str]:
+        if not v:
+            return None
+        v = v.strip()
+        UUID(v)
+        return v
+
+    @field_validator("group_type", mode="before")
+    @classmethod
+    def _norm_group_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
+
+    @field_validator("sub_type", mode="before")
+    @classmethod
+    def _norm_sub_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
 
     @field_validator("sort_order")
     @classmethod
@@ -40,6 +90,9 @@ class ContentListQuery(BaseModel):
         return v if v in cls.ALLOWED_SORT_KEYS else "created_at"
 
 
+# -----------------------------
+# Helpers
+# -----------------------------
 def _apply_search(q, term: Optional[str]):
     if not term:
         return q
@@ -82,7 +135,6 @@ def _sign_url_maybe(gcs, url: Optional[str]) -> Optional[str]:
     if not url:
         return url
     try:
-        # Note: `url` is actually a GCS object key here; we return a signed URL.
         return gcs.signed_get_url(url, expires_seconds=3600)
     except Exception:
         return url
@@ -92,18 +144,24 @@ def _serialize_content(row: CompContent, gcs) -> Dict[str, Any]:
     images = _as_list(getattr(row, "images", []))
     signed_images = [_sign_url_maybe(gcs, img) for img in images]
 
+    group_id_val = getattr(row, "group_id", None)
     return {
         "id": str(getattr(row, "id", "")),
         "name": getattr(row, "name", None),
         "description": getattr(row, "description", None),
+
+        # ✅ NEW
+        "group_id": str(group_id_val) if group_id_val else None,
+        "group_type": getattr(row, "group_type", None),
+        "sub_type": getattr(row, "sub_type", None),
+
         "created_at": _iso(getattr(row, "created_at", None)),
         "updated_at": _iso(getattr(row, "updated_at", None)),
         "created_by": getattr(row, "created_by", None),
         "thumbnail": _sign_url_maybe(gcs, getattr(row, "thumbnail", None)),
         "images": signed_images,
-        "file": _sign_url_maybe(gcs, getattr(row, "file_link", None)),  # map file_link -> file
+        "file": _sign_url_maybe(gcs, getattr(row, "file_link", None)),  # file_link -> file
         "tags": _as_list(getattr(row, "tags", [])),
-        # NEW: expose metadata_json as "metadata"
         "metadata": getattr(row, "metadata_json", None) or {},
     }
 
@@ -119,12 +177,21 @@ def _serialize_tag(t: UserTag) -> Dict[str, Any]:
     }
 
 
+# -----------------------------
+# Command
+# -----------------------------
 class ContentGetCommand(BaseCommand):
     """
     GET /components/contents/get
-    - Schema comes from query params (Depends())
-    - user_id injected by router: execute(payload, user_id=...)
+
+    Supports:
+      - id=<uuid>
+      - group_id=<uuid>
+      - group_type=<string>
+      - sub_type=<string>
+      - tags overlap, search, sort, pagination
     """
+
     name = "components/contents/get"
     schema = ContentListQuery
     require_auth = True
@@ -145,13 +212,13 @@ class ContentGetCommand(BaseCommand):
             "limit": limit,
             "errors": [],
             "error_code": None,
-            "tagging": {
-                "tags": []
-            },
+            "tagging": {"tags": []},
         }
 
         with SessionLocal() as session:
             try:
+                gcs = get_gcs()
+
                 q = session.query(CompContent).filter(CompContent.created_by == user_id)
 
                 # Optional filter by specific content id
@@ -165,9 +232,16 @@ class ContentGetCommand(BaseCommand):
                 raw_tags = payload.tags or ""
                 tags_list = [t.strip() for t in raw_tags.split(",") if t.strip()]
                 if tags_list:
-                    typed_array = array(tags_list, type_=ARRAY(TEXT()))  # text[] literal
+                    typed_array = array(tags_list, type_=ARRAY(TEXT()))
                     q = q.filter(CompContent.tags.op("&&")(typed_array))
-                    # q = q.filter(CompContent.tags.overlap(typed_array))
+
+                # ✅ NEW: group_id / group_type / sub_type filters
+                if payload.group_id:
+                    q = q.filter(CompContent.group_id == payload.group_id)
+                if payload.group_type:
+                    q = q.filter(CompContent.group_type == payload.group_type)
+                if payload.sub_type:
+                    q = q.filter(CompContent.sub_type == payload.sub_type)
 
                 # Sort and page
                 q = _apply_sort(q, payload.sort_key, payload.sort_order)
@@ -175,7 +249,6 @@ class ContentGetCommand(BaseCommand):
                 resp["total_items"] = total
 
                 # Serialize contents
-                gcs = get_gcs()
                 resp["data"] = [_serialize_content(row, gcs) for row in items]
 
                 # Tagging block (per-user tags)
@@ -190,9 +263,7 @@ class ContentGetCommand(BaseCommand):
                         .filter(UserTag.user_id == uid)
                         .order_by(func.lower(UserTag.name).asc())
                     )
-                    # tag_q = tag_q.filter(UserTag.is_active.is_(True))  # enable if you want active-only
-                    user_tags = tag_q.all()
-                    resp["tagging"]["tags"] = [_serialize_tag(t) for t in user_tags]
+                    resp["tagging"]["tags"] = [_serialize_tag(t) for t in tag_q.all()]
                 else:
                     resp["tagging"]["tags"] = []
 
