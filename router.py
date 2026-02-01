@@ -8,7 +8,8 @@ from sockets.socket_registry import socket_registry
 from sockets.room_state import get_sockets_in_room
 from fastapi.responses import JSONResponse
 from inspect import signature, Parameter
-from typing import get_type_hints, List
+from typing import get_type_hints, List, get_origin, get_args
+
 import inspect
 from utils.refresh_available_commands import sync_command_registry_to_db
 
@@ -35,46 +36,146 @@ def get_user_id(credentials: HTTPAuthorizationCredentials = Depends(auth_scheme)
 
 
 def build_file_upload_endpoint(cmd):
+    """
+    Build an endpoint for commands that upload files.
+    This inspects:
+      - cmd.schema (pydantic model fields -> Form(...))
+      - cmd.execute signature -> for UploadFile / List[UploadFile] params create File(...) params
+      - cmd.require_auth -> inject user_id via Depends(get_user_id)
+    Also continues to support older 'multi_file' boolean (keeps backward compatibility).
+    """
     schema_fields = cmd.schema.model_fields if cmd.schema else {}
-    hints = get_type_hints(cmd.schema)
-    is_multi = getattr(cmd, "multi_file", False)
+    schema_hints = get_type_hints(cmd.schema) if cmd.schema else {}
+    # We'll inspect cmd.execute signature to find file params automatically
+    exec_sig = inspect.signature(cmd.execute)
+    exec_params = list(exec_sig.parameters.values())
 
+    # Determine which parameters of execute are the 'payload' and which are file params.
+    # Heuristic:
+    # - If cmd.schema exists, assume the first non-self parameter corresponds to payload
+    # - Otherwise payload may be absent
+    # We'll skip 'self' and find subsequent params
+    file_param_infos = []  # list of tuples (name, is_list)
+    # build a set of schema field names to avoid collisions
+    schema_names = set(schema_fields.keys())
+
+    # Start scanning after 'self' — exclude 'self' explicitly if present
+    for p in exec_params:
+        if p.name == "self":
+            continue
+        # Skip the first payload param if schema is present (it should be the payload)
+        # Convention: execute(self, payload, thumbnail: UploadFile=None, ...)
+        # So if schema exists, assume first non-self param is payload and skip it
+        break
+
+    # We'll do a more robust pass: look at parameters except 'self' and the first one if matches schema payload name
+    exec_param_iter = [p for p in exec_params if p.name != "self"]
+    # If cmd.schema exists and the first exec param is likely the payload, drop it:
+    if cmd.schema and len(exec_param_iter) >= 1:
+        # The first param name is usually 'payload' or similar; we remove it from file detection
+        exec_param_iter = exec_param_iter[1:]
+
+    # Now inspect remaining params for UploadFile / List[UploadFile]
+    for p in exec_param_iter:
+        ann = p.annotation
+        # Handle typing.List[UploadFile], list[UploadFile], etc.
+        is_list = False
+        try:
+            origin = get_origin(ann)
+            if origin in (list, List):
+                args = get_args(ann)
+                if args and args[0] is UploadFile:
+                    is_list = True
+                    file_param_infos.append((p.name, True))
+                    continue
+            # direct UploadFile annotation
+            if ann is UploadFile:
+                file_param_infos.append((p.name, False))
+                continue
+            # if annotation is typing.Any or missing, try to infer by name (fallback)
+        except Exception:
+            pass
+        # fallback by annotation string name (helps if annotations are forwarded or as string)
+        an_str = getattr(ann, "__name__", str(ann)).lower() if ann is not None else ""
+        if "uploadfile" in an_str or "upload_file" in an_str:
+            # can't tell list vs single — check default or name
+            # treat names plural (ending with 's' or 'images') as list
+            if p.name.endswith("s") or p.name in ("images", "files"):
+                file_param_infos.append((p.name, True))
+            else:
+                file_param_infos.append((p.name, False))
+
+    # Backwards compatibility: if cmd.multi_file True and no file_param_infos found, maintain old behavior
+    if getattr(cmd, "multi_file", False) and not file_param_infos:
+        file_param_infos = [("files", True)]
+    if not file_param_infos:
+        # Fallback to legacy single 'file' param
+        file_param_infos = [("file", False)]
+
+    # Build the dynamic endpoint function
     async def endpoint_template(**kwargs):
+        # Extract payload fields for building the Pydantic model
         payload_fields = {k: v for k, v in kwargs.items() if k in schema_fields}
-        file_or_files = kwargs.get("files" if is_multi else "file")
+        # Extract file args by name
+        files_kwargs = {name: kwargs.get(name) for (name, _) in file_param_infos}
+        # Determine user_id if injected
         user_id = kwargs.get("user_id") if "user_id" in kwargs else None
+
+        # auth check
         if cmd.require_auth and user_id is None:
             raise HTTPException(status_code=401, detail="Authentication required")
 
+        # build payload model instance
         payload = cmd.schema(**payload_fields) if cmd.schema else None
 
+        # Prepare to call execute. We need to pass payload and the file params in the correct order
+        # Build arglist in the same order as execute signature (skipping self)
+        call_args = []
+        for p in exec_params:
+            if p.name == "self":
+                continue
+            # if first param expected payload and we have payload, append it
+            if cmd.schema and p == exec_params[0]:
+                call_args.append(payload)
+                continue
+            # if this param is one of our file params, append corresponding value
+            if p.name in files_kwargs:
+                call_args.append(files_kwargs[p.name])
+                continue
+            # if param is user_id and we have user_id, append it
+            if p.name == "user_id" and ("user_id" in kwargs or cmd.require_auth):
+                call_args.append(user_id)
+                continue
+            # otherwise, try to source from kwargs (e.g., optional args) or use None
+            call_args.append(kwargs.get(p.name))
+
+        # call execute (maybe async)
         if cmd.require_auth:
-            return await cmd.execute(payload, file_or_files, user_id)
+            return await maybe_await(cmd.execute, *call_args)
         else:
-            return await cmd.execute(payload, file_or_files)
+            return await maybe_await(cmd.execute, *call_args)
 
+    # Build parameters list: first the schema form fields
     params = []
-
     for field_name, field in schema_fields.items():
-        field_type = hints[field_name]
+        field_type = schema_hints.get(field_name, str)
         default = Form(...) if field.is_required() else Form(field.default)
-        params.append(
-            Parameter(field_name, Parameter.POSITIONAL_OR_KEYWORD, default=default, annotation=field_type)
-        )
+        params.append(Parameter(field_name, Parameter.POSITIONAL_OR_KEYWORD, default=default, annotation=field_type))
 
-    if is_multi:
-        params.append(Parameter("files", Parameter.POSITIONAL_OR_KEYWORD, default=File(...), annotation=List[UploadFile]))
-    else:
-        params.append(Parameter("file", Parameter.POSITIONAL_OR_KEYWORD, default=File(...), annotation=UploadFile))
+    # Then add the file parameters discovered
+    for name, is_list in file_param_infos:
+        if is_list:
+            params.append(Parameter(name, Parameter.POSITIONAL_OR_KEYWORD, default=File(None), annotation=List[UploadFile]))
+        else:
+            params.append(Parameter(name, Parameter.POSITIONAL_OR_KEYWORD, default=File(None), annotation=UploadFile))
 
+    # Inject user_id via dependency if required
     if cmd.require_auth:
-        params.append(
-            Parameter("user_id", Parameter.POSITIONAL_OR_KEYWORD, default=Depends(get_user_id), annotation=str)
-        )
+        params.append(Parameter("user_id", Parameter.POSITIONAL_OR_KEYWORD, default=Depends(get_user_id), annotation=str))
 
+    # Replace the endpoint function signature
     endpoint_template.__signature__ = signature(endpoint_template).replace(parameters=params)
     return endpoint_template
-
 
 for command in command_registry:
     schema = command.schema
@@ -140,6 +241,8 @@ for command in command_registry:
         return endpoint
 
 
+    group_name = getattr(command, "group", None) or "Default"
+
     route_kwargs = {
         "path": f"/{endpoint_name}",
         "endpoint": generate_endpoint(command),
@@ -147,8 +250,11 @@ for command in command_registry:
         "name": endpoint_name,
         "summary": f"{endpoint_name} Command",
         "response_model": dict,
+        # put the command group into tags so Swagger groups endpoints
+        "tags": [group_name],
     }
 
+    # If route is open (no require_auth) keep your current openapi_extra behavior
     if not command.require_auth:
         route_kwargs["openapi_extra"] = {"security": []}
 
