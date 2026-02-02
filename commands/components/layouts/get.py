@@ -19,7 +19,10 @@ from models.tbl_user_tags import UserTag
 # Query schema
 # -----------------------------
 class LayoutListQuery(BaseModel):
-    id: Optional[str] = Field(default=None, description="Exact layout id (UUID). If provided, returns only that record.")
+    id: Optional[str] = Field(
+        default=None,
+        description="Exact layout id (UUID). If provided, returns only that record.",
+    )
     search_term: Optional[str] = Field(default=None, description="Search over name/description")
     sort_key: Optional[str] = Field(default="created_at", description="Sort field")
     sort_order: Optional[str] = Field(default="desc", description='"asc" or "desc"')
@@ -27,9 +30,7 @@ class LayoutListQuery(BaseModel):
     limit: Optional[int] = Field(default=10, ge=1, le=100, description="page size (<=100)")
     tags: Optional[str] = Field(default=None, description="Comma-separated tag names to filter by (ANY match)")
 
-    # ✅ NEW: filters
     group_id: Optional[str] = Field(default=None, description="Filter by group_id (UUID)")
-    group_type: Optional[str] = Field(default=None, description="Filter by group_type")
     sub_type: Optional[str] = Field(default=None, description="Filter by sub_type")
 
     ALLOWED_SORT_KEYS: ClassVar[Set[str]] = {
@@ -37,9 +38,7 @@ class LayoutListQuery(BaseModel):
         "name",
         "created_at",
         "updated_at",
-        # ✅ NEW
         "group_id",
-        "group_type",
         "sub_type",
     }
 
@@ -49,7 +48,7 @@ class LayoutListQuery(BaseModel):
         if not v:
             return None
         v = v.strip()
-        UUID(v)  # validate UUID format
+        UUID(v)
         return v
 
     @field_validator("group_id")
@@ -58,16 +57,8 @@ class LayoutListQuery(BaseModel):
         if not v:
             return None
         v = v.strip()
-        UUID(v)  # validate UUID format
+        UUID(v)
         return v
-
-    @field_validator("group_type", mode="before")
-    @classmethod
-    def _norm_group_type(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return None
-        s = str(v).strip()
-        return s or None
 
     @field_validator("sub_type", mode="before")
     @classmethod
@@ -146,18 +137,14 @@ def _serialize_layout(row: CompLayout, gcs) -> Dict[str, Any]:
         "id": str(getattr(row, "id", "")),
         "name": getattr(row, "name", None),
         "description": getattr(row, "description", None),
-
-        # ✅ NEW
         "group_id": str(group_id_val) if group_id_val else None,
-        "group_type": getattr(row, "group_type", None),
         "sub_type": getattr(row, "sub_type", None),
-
         "created_at": _iso(getattr(row, "created_at", None)),
         "updated_at": _iso(getattr(row, "updated_at", None)),
         "created_by": getattr(row, "created_by", None),
         "thumbnail": _sign_url_maybe(gcs, getattr(row, "thumbnail", None)),
         "images": signed_images,
-        "file": _sign_url_maybe(gcs, getattr(row, "file_link", None)),  # file_link -> file
+        "file": _sign_url_maybe(gcs, getattr(row, "file_link", None)),
         "tags": _as_list(getattr(row, "tags", [])),
         "metadata": getattr(row, "metadata_json", None) or {},
     }
@@ -184,7 +171,6 @@ class LayoutGetCommand(BaseCommand):
     Supports:
       - id=<uuid> (returns only that record, or empty list)
       - group_id=<uuid>
-      - group_type=<string>
       - sub_type=<string>
       - tags overlap, search, sort, pagination
     """
@@ -216,7 +202,6 @@ class LayoutGetCommand(BaseCommand):
             try:
                 gcs = get_gcs()
 
-                # ✅ If id is provided, return ONLY that record (respecting group_id/group_type/sub_type too)
                 if payload.id:
                     filters = [
                         CompLayout.created_by == user_id,
@@ -224,8 +209,6 @@ class LayoutGetCommand(BaseCommand):
                     ]
                     if payload.group_id:
                         filters.append(CompLayout.group_id == payload.group_id)
-                    if payload.group_type:
-                        filters.append(CompLayout.group_type == payload.group_type)
                     if payload.sub_type:
                         filters.append(CompLayout.sub_type == payload.sub_type)
 
@@ -252,37 +235,27 @@ class LayoutGetCommand(BaseCommand):
                         "tagging": {"tags": []},
                     }
 
-                # -----------------------------
-                # list behavior
-                # -----------------------------
                 q = session.query(CompLayout).filter(CompLayout.created_by == user_id)
 
-                # search
                 q = _apply_search(q, payload.search_term)
 
-                # tags overlap
                 raw_tags = payload.tags or ""
                 tags_list = [t.strip() for t in raw_tags.split(",") if t.strip()]
                 if tags_list:
                     typed_array = array(tags_list, type_=ARRAY(TEXT()))
                     q = q.filter(CompLayout.tags.op("&&")(typed_array))
 
-                # ✅ NEW: group_id/group_type/sub_type filters
                 if payload.group_id:
                     q = q.filter(CompLayout.group_id == payload.group_id)
-                if payload.group_type:
-                    q = q.filter(CompLayout.group_type == payload.group_type)
                 if payload.sub_type:
                     q = q.filter(CompLayout.sub_type == payload.sub_type)
 
-                # sort + paginate
                 q = _apply_sort(q, payload.sort_key, payload.sort_order)
                 items, total = _paginate(q, current_page, limit)
 
                 resp["total_items"] = total
                 resp["data"] = [_serialize_layout(row, gcs) for row in items]
 
-                # Tagging block (per-user tags)
                 try:
                     uid = int(user_id)
                 except (TypeError, ValueError):

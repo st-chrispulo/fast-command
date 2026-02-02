@@ -1,1 +1,0 @@
-Hello GCS via boto3 put_object!

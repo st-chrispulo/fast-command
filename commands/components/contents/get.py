@@ -1,5 +1,3 @@
-# commands/components/content/get.py
-
 from typing import Optional, Any, Dict, List, Tuple, ClassVar, Set
 from uuid import UUID
 
@@ -15,9 +13,6 @@ from models.components.tbl_comp_contents import CompContent
 from models.tbl_user_tags import UserTag
 
 
-# -----------------------------
-# Query schema
-# -----------------------------
 class ContentListQuery(BaseModel):
     search_term: Optional[str] = Field(default=None, description="Search over name/description")
     sort_key: Optional[str] = Field(default="created_at", description="Sort field")
@@ -27,9 +22,7 @@ class ContentListQuery(BaseModel):
     tags: Optional[str] = Field(default=None, description="Comma-separated tag names to filter by (ANY match)")
     id: Optional[str] = Field(default=None, description="Filter by specific content id (UUID)")
 
-    # ✅ NEW / UPDATED: filters
     group_id: Optional[str] = Field(default=None, description="Filter by group_id (UUID)")
-    group_type: Optional[str] = Field(default=None, description="Filter by group_type")
     sub_type: Optional[str] = Field(default=None, description="Filter by sub_type")
 
     ALLOWED_SORT_KEYS: ClassVar[Set[str]] = {
@@ -37,9 +30,7 @@ class ContentListQuery(BaseModel):
         "name",
         "created_at",
         "updated_at",
-        # ✅ NEW (optional)
         "group_id",
-        "group_type",
         "sub_type",
     }
 
@@ -60,14 +51,6 @@ class ContentListQuery(BaseModel):
         v = v.strip()
         UUID(v)
         return v
-
-    @field_validator("group_type", mode="before")
-    @classmethod
-    def _norm_group_type(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return None
-        s = str(v).strip()
-        return s or None
 
     @field_validator("sub_type", mode="before")
     @classmethod
@@ -90,9 +73,6 @@ class ContentListQuery(BaseModel):
         return v if v in cls.ALLOWED_SORT_KEYS else "created_at"
 
 
-# -----------------------------
-# Helpers
-# -----------------------------
 def _apply_search(q, term: Optional[str]):
     if not term:
         return q
@@ -149,18 +129,14 @@ def _serialize_content(row: CompContent, gcs) -> Dict[str, Any]:
         "id": str(getattr(row, "id", "")),
         "name": getattr(row, "name", None),
         "description": getattr(row, "description", None),
-
-        # ✅ NEW
         "group_id": str(group_id_val) if group_id_val else None,
-        "group_type": getattr(row, "group_type", None),
         "sub_type": getattr(row, "sub_type", None),
-
         "created_at": _iso(getattr(row, "created_at", None)),
         "updated_at": _iso(getattr(row, "updated_at", None)),
         "created_by": getattr(row, "created_by", None),
         "thumbnail": _sign_url_maybe(gcs, getattr(row, "thumbnail", None)),
         "images": signed_images,
-        "file": _sign_url_maybe(gcs, getattr(row, "file_link", None)),  # file_link -> file
+        "file": _sign_url_maybe(gcs, getattr(row, "file_link", None)),
         "tags": _as_list(getattr(row, "tags", [])),
         "metadata": getattr(row, "metadata_json", None) or {},
     }
@@ -177,9 +153,6 @@ def _serialize_tag(t: UserTag) -> Dict[str, Any]:
     }
 
 
-# -----------------------------
-# Command
-# -----------------------------
 class ContentGetCommand(BaseCommand):
     """
     GET /components/contents/get
@@ -187,7 +160,6 @@ class ContentGetCommand(BaseCommand):
     Supports:
       - id=<uuid>
       - group_id=<uuid>
-      - group_type=<string>
       - sub_type=<string>
       - tags overlap, search, sort, pagination
     """
@@ -221,37 +193,28 @@ class ContentGetCommand(BaseCommand):
 
                 q = session.query(CompContent).filter(CompContent.created_by == user_id)
 
-                # Optional filter by specific content id
                 if payload.id:
                     q = q.filter(CompContent.id == payload.id)
 
-                # Search
                 q = _apply_search(q, payload.search_term)
 
-                # Tags filter (ANY overlap) with proper Postgres text[] typing
                 raw_tags = payload.tags or ""
                 tags_list = [t.strip() for t in raw_tags.split(",") if t.strip()]
                 if tags_list:
                     typed_array = array(tags_list, type_=ARRAY(TEXT()))
                     q = q.filter(CompContent.tags.op("&&")(typed_array))
 
-                # ✅ NEW: group_id / group_type / sub_type filters
                 if payload.group_id:
                     q = q.filter(CompContent.group_id == payload.group_id)
-                if payload.group_type:
-                    q = q.filter(CompContent.group_type == payload.group_type)
                 if payload.sub_type:
                     q = q.filter(CompContent.sub_type == payload.sub_type)
 
-                # Sort and page
                 q = _apply_sort(q, payload.sort_key, payload.sort_order)
                 items, total = _paginate(q, current_page, limit)
                 resp["total_items"] = total
 
-                # Serialize contents
                 resp["data"] = [_serialize_content(row, gcs) for row in items]
 
-                # Tagging block (per-user tags)
                 try:
                     uid = int(user_id)
                 except (TypeError, ValueError):
