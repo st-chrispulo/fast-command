@@ -1,43 +1,42 @@
-# commands/components/connections/delete.py
+from __future__ import annotations
+
 import time
-from typing import Optional, List
+from typing import List, Optional
 
-from pydantic import BaseModel, field_validator
 from fastapi import HTTPException
+from pydantic import BaseModel, Field, field_validator
 
-from commands.base_command import BaseCommand
 from auth.db import SessionLocal
+from commands.base_command import BaseCommand
 from models.components.tbl_comp_connections import CompConnection
 
-# Prefer your app logger if available; fallback to stdlib
 try:
-    from logger import logger
+    from logger import logger as _app_logger
+
+    logger = _app_logger.getChild("components.connections.delete")
 except Exception:
-    import logging as _logging
-    logger = _logging.getLogger("delete_comp_connections")
-    if not logger.handlers:
-        handler = _logging.StreamHandler()
-        handler.setFormatter(_logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-        logger.addHandler(handler)
-    logger.setLevel(_logging.DEBUG)
+    import logging
+
+    logger = logging.getLogger(__name__)
 
 
 class DeleteCompConnectionsPayload(BaseModel):
-    # Accept list[str] to stay consistent with other delete endpoints
-    ids: List[str]
+    """Delete one or more connection rows by id."""
+
+    ids: List[str] = Field(description="Connection ids to delete")
 
     @field_validator("ids")
     @classmethod
-    def _validate_ids(cls, v: List[str]) -> List[str]:
+    def validate_ids(cls, v: List[str]) -> List[str]:
         if not isinstance(v, list):
             raise ValueError("ids must be a list")
+
         cleaned = [str(x).strip() for x in v if str(x or "").strip()]
         if not cleaned:
             raise ValueError("ids cannot be empty")
 
-        # de-dup while preserving order
         seen = set()
-        uniq = []
+        uniq: List[str] = []
         for x in cleaned:
             if x not in seen:
                 seen.add(x)
@@ -46,9 +45,7 @@ class DeleteCompConnectionsPayload(BaseModel):
 
 
 class DeleteCompConnectionsCommand(BaseCommand):
-    """
-    Hard-deletes one or more CompConnection rows from the database.
-    """
+    """Hard-delete one or more CompConnection rows from the database."""
 
     name = "components/connections/delete"
     schema = DeleteCompConnectionsPayload
@@ -57,20 +54,14 @@ class DeleteCompConnectionsCommand(BaseCommand):
     type = "json"
     group = "Funnel"
 
-    async def execute(self, payload: DeleteCompConnectionsPayload, user_id: Optional[str] = None):
-        start_t = time.monotonic()
-        logger.info("[comp_connections/delete] start ids=%s user_id=%s", payload.ids, user_id)
+    async def execute(self, payload: DeleteCompConnectionsPayload, user_id: Optional[str] = None) -> dict:
+        t0 = time.monotonic()
+        logger.info("[connections] delete start ids=%s user_id=%s", payload.ids, user_id)
 
         db = SessionLocal()
         try:
-            rows = (
-                db.query(CompConnection)
-                .filter(CompConnection.id.in_(payload.ids))
-                .all()
-            )
-
+            rows = db.query(CompConnection).filter(CompConnection.id.in_(payload.ids)).all()
             if not rows:
-                logger.info("[comp_connections/delete] none found ids=%s", payload.ids)
                 raise HTTPException(status_code=404, detail="No matching connections found")
 
             found_ids = {str(r.id) for r in rows}
@@ -80,10 +71,11 @@ class DeleteCompConnectionsCommand(BaseCommand):
                 db.delete(r)
             db.commit()
 
-            elapsed = time.monotonic() - start_t
             logger.info(
-                "[comp_connections/delete] deleted_count=%d not_found=%d elapsed=%.3fs",
-                len(found_ids), len(not_found), elapsed
+                "[connections] delete ok deleted_count=%d not_found=%d perf_ms=%.2f",
+                len(found_ids),
+                len(not_found),
+                (time.monotonic() - t0) * 1000,
             )
 
             return {
@@ -93,13 +85,12 @@ class DeleteCompConnectionsCommand(BaseCommand):
                 "ids_deleted": sorted(found_ids),
                 "not_found": not_found,
             }
-
         except HTTPException:
             db.rollback()
             raise
-        except Exception as e:
-            logger.exception("[comp_connections/delete] error - rolling back: %s", e)
+        except Exception:
             db.rollback()
+            logger.exception("[connections] delete failed")
             raise HTTPException(status_code=500, detail="Failed to delete connections")
         finally:
             db.close()

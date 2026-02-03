@@ -1,40 +1,40 @@
-import time
-from typing import Optional, List, Dict
+from __future__ import annotations
 
-from pydantic import BaseModel, field_validator
+import time
+from typing import Dict, List, Optional
+from uuid import UUID
+
 from fastapi import HTTPException
+from pydantic import BaseModel, field_validator
 from sqlalchemy import func
 
-from commands.base_command import BaseCommand
 from auth.db import SessionLocal
+from commands.base_command import BaseCommand
 from models.components.tbl_comp_pages import CompPage
 
-# Prefer your app logger if available; fallback to stdlib
 try:
-    from logger import logger
+    from logger import logger as _app_logger
+
+    logger = _app_logger.getChild("components.pages.delete")
 except Exception:
-    import logging as _logging
-    logger = _logging.getLogger("delete_comp_page")
-    if not logger.handlers:
-        handler = _logging.StreamHandler()
-        handler.setFormatter(_logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-        logger.addHandler(handler)
-    logger.setLevel(_logging.DEBUG)
+    import logging
+
+    logger = logging.getLogger(__name__)
 
 
 class DeleteCompPagePayload(BaseModel):
-    # Accept a list of string IDs (avoid strict UUID parsing issues in Swagger/UI)
     ids: List[str]
 
     @field_validator("ids")
     @classmethod
-    def _validate_ids(cls, v: List[str]) -> List[str]:
+    def validate_ids(cls, v: List[str]) -> List[str]:
         if not isinstance(v, list):
             raise ValueError("ids must be a list")
         cleaned = [str(x).strip() for x in v if str(x or "").strip()]
         if not cleaned:
             raise ValueError("ids cannot be empty")
-        seen, uniq = set(), []
+        seen = set()
+        uniq: List[str] = []
         for x in cleaned:
             if x not in seen:
                 seen.add(x)
@@ -42,18 +42,20 @@ class DeleteCompPagePayload(BaseModel):
         return uniq
 
 
+def parse_uuid_ids(ids: List[str]) -> List[UUID]:
+    out: List[UUID] = []
+    bad: List[str] = []
+    for s in ids:
+        try:
+            out.append(UUID(str(s)))
+        except Exception:
+            bad.append(str(s))
+    if bad:
+        raise HTTPException(status_code=400, detail={"message": "Invalid UUID in ids", "invalid_ids": bad})
+    return out
+
+
 class DeleteCompPageCommand(BaseCommand):
-    """
-    Hard-deletes one or more CompPage rows from the database.
-    NOTE: Does NOT delete GCS objects. Handle storage cleanup separately.
-
-    NEW RULE:
-      - If sub_type == "utility":
-          - must have group_id
-          - block delete when there is more than 1 record with same group_id
-            (meaning other records still reference that shared utility group)
-    """
-
     name = "components/pages/delete"
     schema = DeleteCompPagePayload
     require_auth = True
@@ -61,18 +63,18 @@ class DeleteCompPageCommand(BaseCommand):
     type = "json"
     group = "Page"
 
-    async def execute(self, payload: DeleteCompPagePayload, user_id: Optional[str] = None):
+    async def execute(self, payload: DeleteCompPagePayload, user_id: Optional[str] = None) -> dict:
         start_t = time.monotonic()
         logger.info("[comp_pages/delete] start ids=%s user_id=%s", payload.ids, user_id)
 
+        if self.require_auth and not user_id:
+            raise HTTPException(status_code=401, detail="Unauthorized (no user context).")
+
+        uuids = parse_uuid_ids(payload.ids)
+
         db = SessionLocal()
         try:
-            rows: List[CompPage] = (
-                db.query(CompPage)
-                .filter(CompPage.id.in_(payload.ids))
-                .all()
-            )
-
+            rows: List[CompPage] = db.query(CompPage).filter(CompPage.id.in_(uuids)).all()
             if not rows:
                 logger.info("[comp_pages/delete] none found ids=%s", payload.ids)
                 raise HTTPException(status_code=404, detail="No matching page found")
@@ -80,7 +82,6 @@ class DeleteCompPageCommand(BaseCommand):
             found_ids = {str(r.id) for r in rows}
             not_found = [i for i in payload.ids if i not in found_ids]
 
-            # ---- NEW: utility delete guard ----
             utility_blocks: List[Dict[str, str]] = []
             for r in rows:
                 st = (getattr(r, "sub_type", None) or "").strip().lower()
@@ -118,7 +119,6 @@ class DeleteCompPageCommand(BaseCommand):
                     },
                 )
 
-            # ---- delete ----
             for r in rows:
                 db.delete(r)
             db.commit()
@@ -126,7 +126,9 @@ class DeleteCompPageCommand(BaseCommand):
             elapsed = time.monotonic() - start_t
             logger.info(
                 "[comp_pages/delete] deleted_count=%d not_found=%d elapsed=%.3fs",
-                len(found_ids), len(not_found), elapsed
+                len(found_ids),
+                len(not_found),
+                elapsed,
             )
 
             return {
@@ -143,6 +145,6 @@ class DeleteCompPageCommand(BaseCommand):
         except Exception as e:
             logger.exception("[comp_pages/delete] error - rolling back: %s", e)
             db.rollback()
-            raise HTTPException(status_code=500, detail="Failed to delete page")
+            raise HTTPException(status_code=500, detail="Failed to delete page") from e
         finally:
             db.close()

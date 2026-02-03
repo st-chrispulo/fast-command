@@ -1,42 +1,39 @@
-# commands/components/navigations/delete.py
+from __future__ import annotations
 
 import time
-from typing import Optional, List, Dict
+from typing import Dict, List, Optional
 
-from pydantic import BaseModel, field_validator
 from fastapi import HTTPException
+from pydantic import BaseModel, field_validator
 from sqlalchemy import func
 
-from commands.base_command import BaseCommand
 from auth.db import SessionLocal
+from commands.base_command import BaseCommand
 from models.components.tbl_comp_navigations import CompNavigation
 
-# Prefer your app logger if available; fallback to stdlib
 try:
-    from logger import logger
+    from logger import logger as _app_logger
+
+    logger = _app_logger.getChild("components.navigations.delete")
 except Exception:
-    import logging as _logging
-    logger = _logging.getLogger("delete_comp_navigation")
-    if not logger.handlers:
-        handler = _logging.StreamHandler()
-        handler.setFormatter(_logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-        logger.addHandler(handler)
-    logger.setLevel(_logging.DEBUG)
+    import logging
+
+    logger = logging.getLogger(__name__)
 
 
 class DeleteCompNavigationPayload(BaseModel):
-    # Accept a list of string IDs (avoid strict UUID parsing issues in Swagger/UI)
     ids: List[str]
 
     @field_validator("ids")
     @classmethod
-    def _validate_ids(cls, v: List[str]) -> List[str]:
+    def validate_ids(cls, v: List[str]) -> List[str]:
         if not isinstance(v, list):
             raise ValueError("ids must be a list")
         cleaned = [str(x).strip() for x in v if str(x or "").strip()]
         if not cleaned:
             raise ValueError("ids cannot be empty")
-        seen, uniq = set(), []
+        seen: set[str] = set()
+        uniq: List[str] = []
         for x in cleaned:
             if x not in seen:
                 seen.add(x)
@@ -45,15 +42,11 @@ class DeleteCompNavigationPayload(BaseModel):
 
 
 class DeleteCompNavigationCommand(BaseCommand):
-    """
-    Hard-deletes one or more CompNavigation rows from the database.
-    NOTE: Does NOT delete GCS objects. Handle storage cleanup separately.
+    """Hard-delete one or more CompNavigation rows.
 
-    NEW RULE:
-      - If sub_type == "utility":
-          - must have group_id
-          - block delete when there is more than 1 record with same group_id
-            (meaning other records still reference that shared utility group)
+    Utility rule:
+        When sub_type == "utility", group_id must be present and deletion is blocked when
+        more than one record exists with the same group_id.
     """
 
     name = "components/navigations/delete"
@@ -63,18 +56,15 @@ class DeleteCompNavigationCommand(BaseCommand):
     type = "json"
     group = "Navigation"
 
-    async def execute(self, payload: DeleteCompNavigationPayload, user_id: Optional[str] = None):
+    async def execute(self, payload: DeleteCompNavigationPayload, user_id: Optional[str] = None) -> Dict[str, object]:
         start_t = time.monotonic()
         logger.info("[comp_navigations/delete] start ids=%s user_id=%s", payload.ids, user_id)
 
         db = SessionLocal()
         try:
             rows: List[CompNavigation] = (
-                db.query(CompNavigation)
-                .filter(CompNavigation.id.in_(payload.ids))
-                .all()
+                db.query(CompNavigation).filter(CompNavigation.id.in_(payload.ids)).all()
             )
-
             if not rows:
                 logger.info("[comp_navigations/delete] none found ids=%s", payload.ids)
                 raise HTTPException(status_code=404, detail="No matching navigation found")
@@ -82,12 +72,6 @@ class DeleteCompNavigationCommand(BaseCommand):
             found_ids = {str(r.id) for r in rows}
             not_found = [i for i in payload.ids if i not in found_ids]
 
-            # ---- NEW: utility delete guard ----
-            # If any row is utility, check its group_id usage count.
-            # If count > 1 => other rows still reference it => block delete.
-            #
-            # NOTE: We check *current DB* count (not just 'rows' loaded),
-            #       because user may delete only one of many.
             utility_blocks: List[Dict[str, str]] = []
             for r in rows:
                 st = (getattr(r, "sub_type", None) or "").strip().lower()
@@ -96,7 +80,6 @@ class DeleteCompNavigationCommand(BaseCommand):
 
                 gid = getattr(r, "group_id", None)
                 if not gid:
-                    # Be strict: utility without group_id means we can't reason about references safely
                     raise HTTPException(
                         status_code=400,
                         detail=f"Cannot delete utility navigation '{r.id}': missing group_id",
@@ -110,15 +93,10 @@ class DeleteCompNavigationCommand(BaseCommand):
 
                 if group_count > 1:
                     utility_blocks.append(
-                        {
-                            "id": str(r.id),
-                            "group_id": str(gid),
-                            "count_in_group": str(group_count),
-                        }
+                        {"id": str(r.id), "group_id": str(gid), "count_in_group": str(group_count)}
                     )
 
             if utility_blocks:
-                # Return a clear error message. You can also include which IDs were blocked.
                 raise HTTPException(
                     status_code=409,
                     detail={
@@ -127,7 +105,6 @@ class DeleteCompNavigationCommand(BaseCommand):
                     },
                 )
 
-            # ---- delete ----
             for r in rows:
                 db.delete(r)
             db.commit()
@@ -135,7 +112,9 @@ class DeleteCompNavigationCommand(BaseCommand):
             elapsed = time.monotonic() - start_t
             logger.info(
                 "[comp_navigations/delete] deleted_count=%d not_found=%d elapsed=%.3fs",
-                len(found_ids), len(not_found), elapsed
+                len(found_ids),
+                len(not_found),
+                elapsed,
             )
 
             return {
@@ -145,13 +124,12 @@ class DeleteCompNavigationCommand(BaseCommand):
                 "ids_deleted": sorted(found_ids),
                 "not_found": not_found,
             }
-
         except HTTPException:
             db.rollback()
             raise
         except Exception as e:
             logger.exception("[comp_navigations/delete] error - rolling back: %s", e)
             db.rollback()
-            raise HTTPException(status_code=500, detail="Failed to delete navigation")
+            raise HTTPException(status_code=500, detail="Failed to delete navigation") from e
         finally:
             db.close()

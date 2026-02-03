@@ -1,46 +1,53 @@
+from __future__ import annotations
+
 import time
-from typing import Optional, List
+from typing import List, Optional
 from uuid import UUID
 
 from fastapi import HTTPException
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
-from commands.base_command import BaseCommand
 from auth.db import SessionLocal
+from commands.base_command import BaseCommand
 from models.tbl_funnels import Funnel
 
-# Prefer your app logger if available; fallback to stdlib
 try:
-    from logger import logger
+    from logger import logger as _app_logger
+
+    logger = _app_logger.getChild("components.funnels.delete")
 except Exception:
-    import logging as _logging
-    logger = _logging.getLogger("funnels_delete")
-    if not logger.handlers:
-        handler = _logging.StreamHandler()
-        handler.setFormatter(_logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-        logger.addHandler(handler)
-    logger.setLevel(_logging.DEBUG)
+    import logging
+
+    logger = logging.getLogger(__name__)
 
 
 class DeleteFunnelsPayload(BaseModel):
-    ids: List[UUID]
+    ids: List[UUID] = Field(..., description="Funnel ids to delete")
 
     @field_validator("ids")
     @classmethod
-    def _ids_not_empty(cls, v: List[UUID]) -> List[UUID]:
+    def validate_ids(cls, v: List[UUID]) -> List[UUID]:
         if not v:
             raise ValueError("ids array is required and cannot be empty")
-        # Ensure no null-ish entries
-        cleaned = [item for item in v if item is not None]
+
+        cleaned = [x for x in v if x is not None]
         if not cleaned:
             raise ValueError("ids array cannot be all null values")
-        return cleaned
+
+        uniq: List[UUID] = []
+        seen = set()
+        for x in cleaned:
+            if x not in seen:
+                seen.add(x)
+                uniq.append(x)
+
+        if not uniq:
+            raise ValueError("ids array is required and cannot be empty")
+
+        return uniq
 
 
 class DeleteFunnelsCommand(BaseCommand):
-    """
-    Deletes multiple Funnels by IDs.
-    """
     name = "components/funnels/delete"
     schema = DeleteFunnelsPayload
     require_auth = True
@@ -48,32 +55,22 @@ class DeleteFunnelsCommand(BaseCommand):
     type = "json"
     group = "Funnel"
 
-    async def execute(
-        self,
-        payload: DeleteFunnelsPayload,
-        user_id: Optional[str] = None,
-    ):
+    async def execute(self, payload: DeleteFunnelsPayload, user_id: Optional[str] = None):
         t0 = time.monotonic()
-        logger.info(
-            "[funnels] bulk delete start ids=%s user_id=%s",
-            [str(i) for i in payload.ids],
-            user_id,
-        )
+
+        if self.require_auth and not user_id:
+            raise HTTPException(status_code=401, detail="Unauthorized (no user context).")
+
+        ids = payload.ids
+        logger.info("[funnels] bulk delete start ids=%s user_id=%s", [str(i) for i in ids], user_id)
 
         db = SessionLocal()
         try:
-            if self.require_auth and not user_id:
-                raise HTTPException(status_code=401, detail="Unauthorized (no user context).")
-
-            q = db.query(Funnel).filter(Funnel.id.in_(payload.ids))
-            rows = q.all()
-
+            rows = db.query(Funnel).filter(Funnel.id.in_(ids)).all()
             if not rows:
-                # nothing found for any id
                 raise HTTPException(status_code=404, detail="No funnels found for given ids")
 
-            deleted_ids: List[str] = [str(r.id) for r in rows]
-
+            deleted_ids = [str(r.id) for r in rows]
             for r in rows:
                 db.delete(r)
 
@@ -88,10 +85,7 @@ class DeleteFunnelsCommand(BaseCommand):
 
             return {
                 "status": "ok",
-                "data": {
-                    "deleted_count": len(deleted_ids),
-                    "deleted_ids": deleted_ids,
-                },
+                "data": {"deleted_count": len(deleted_ids), "deleted_ids": deleted_ids},
             }
         except HTTPException:
             db.rollback()

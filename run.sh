@@ -11,13 +11,34 @@
 # We explicitly 'export' all envs so subprocesses (python/uvicorn) inherit them.
 ###############################################################################
 
-set -e  # stop on first error
+DEBUG_BOOTSTRAP="${DEBUG_BOOTSTRAP:-0}"
+
+if [ "$DEBUG_BOOTSTRAP" -eq 1 ]; then
+  set -x
+  set +e
+else
+  set -e
+fi
+
+set -o pipefail
+
+trap 'code=$?;
+  echo "";
+  echo "ERROR: command failed (exit=$code) at line $LINENO: $BASH_COMMAND";
+  echo "";
+  if [ "$DEBUG_BOOTSTRAP" -eq 1 ]; then
+    echo "Debug mode: continuing...";
+    true
+  else
+    exit $code
+  fi
+' ERR
 
 ########################################
 # CONFIGURATION YOU CAN ADJUST
 ########################################
 VENV_DIR=".venv"
-BACKEND_APP_MODULE_DEFAULT="app:app"
+BACKEND_APP_MODULE_DEFAULT="app.main:app"
 UVICORN_HOST="0.0.0.0"
 UVICORN_PORT="8000"
 MIGRATIONS_DIR="migrations"
@@ -59,16 +80,11 @@ log "Will activate venv from: $ACTIVATE_PATH"
 ########################################
 # utilities: env loading / masking
 ########################################
-# Safely load KEY=VALUE pairs from a .env-style file:
-# - strips CRLF
-# - ignores comments & blank lines
-# - exports variables to the current shell
 load_env_file () {
     local file="$1"
     if [ -f "$file" ]; then
         log "Loading env from $file"
         set -a
-        # shellcheck disable=SC1090
         source /dev/stdin <<EOF
 $(sed -e 's/\r$//' "$file" | grep -E '^[[:space:]]*[^#[:space:]]' || true)
 EOF
@@ -79,7 +95,6 @@ EOF
 }
 
 mask_val () {
-    # mask long values for display; leave short ones alone
     local v="$1"
     local n=${#v}
     if [ "$n" -le 6 ]; then echo "$v"; else echo "${v:0:3}***${v: -2}"; fi
@@ -105,13 +120,9 @@ fi
 
 ########################################
 # 1) Load envs with clear precedence
-#    You can flip the order if you prefer .env.init to win over others.
 ########################################
-# Start with .env.init (baseline)
 load_env_file ".env.init"
-# Then .env (committed/generated)
 [ -f ".env" ] && load_env_file ".env"
-# Finally .env.local (personal overrides)
 [ -f ".env.local" ] && load_env_file ".env.local"
 
 ########################################
@@ -157,7 +168,7 @@ fi
 ########################################
 if [ ! -d "$VENV_DIR" ]; then
     log "Creating virtual environment in $VENV_DIR"
-    "$PYTHON_CMD" -m venv "$VENV_DIR"
+    "$PYTHON_CMD" -m venv "$VENV_DIR" || true
 fi
 
 if [ ! -f "$ACTIVATE_PATH" ]; then
@@ -166,7 +177,6 @@ if [ ! -f "$ACTIVATE_PATH" ]; then
 fi
 
 log "Activating virtual environment"
-# shellcheck disable=SC1090
 source "$ACTIVATE_PATH"
 export PYTHONUNBUFFERED=1
 
@@ -175,25 +185,34 @@ export PYTHONUNBUFFERED=1
 ########################################
 if [ -f "requirements.txt" ]; then
     log "Installing requirements.txt"
-    pip install -r requirements.txt
+    pip install -r requirements.txt || true
 else
     log "requirements.txt not found, continuing without it"
 fi
 
 log "Ensuring core bootstrap deps (psycopg2-binary, python-dotenv, uvicorn, fastapi)"
-pip install psycopg2-binary python-dotenv uvicorn fastapi
+pip install psycopg2-binary python-dotenv uvicorn fastapi || true
 
 ########################################
 # 6) Run DB bootstrap & migrations
-#    - uses PG_INIT_DB_* (exported above)
-#    - typically generates/updates .env with runtime PG_DB_* creds
 ########################################
 log "Running database bootstrap & migrations"
 "$PYTHON_CMD" -m database_setup --migrations-dir "$MIGRATIONS_DIR"
+BOOTSTRAP_EXIT=$?
+
+if [ "$BOOTSTRAP_EXIT" -ne 0 ]; then
+  echo ""
+  echo "WARN: database_setup failed (exit=$BOOTSTRAP_EXIT)."
+  if [ "$DEBUG_BOOTSTRAP" -eq 1 ]; then
+    echo "Debug mode: continuing so you can inspect env/files."
+  else
+    echo "Set DEBUG_BOOTSTRAP=1 to continue after errors."
+    exit "$BOOTSTRAP_EXIT"
+  fi
+fi
 
 ########################################
 # 7) Re-load runtime envs *after* bootstrap
-#    So uvicorn/app reads the fresh PG_DB_* values from generated .env
 ########################################
 if [ -f ".env" ]; then
     load_env_file ".env"
@@ -202,11 +221,9 @@ if [ -f ".env.local" ]; then
     load_env_file ".env.local"
 fi
 
-# Sanity: show the key DB envs we're about to run with (masked)
 log "Runtime env preview (masked)"
 preview_env
 
-# Soft-validate known runtime keys (adjust to your app’s needs)
 RUNTIME_KEYS=( "PG_DB_NAME" "PG_DB_USER" "PG_DB_PASSWORD" "PG_DB_HOST" "PG_DB_PORT" )
 MISS=0
 for VAR in "${RUNTIME_KEYS[@]}"; do
@@ -221,9 +238,18 @@ done
 # 8) Launch FastAPI backend with uvicorn
 ########################################
 export WATCHFILES_FORCE_POLLING=1
-
-# Allow BACKEND_APP_MODULE override from env; fall back to default
 BACKEND_APP_MODULE="${BACKEND_APP_MODULE:-$BACKEND_APP_MODULE_DEFAULT}"
 
 log "Starting FastAPI with uvicorn ($BACKEND_APP_MODULE) on ${UVICORN_HOST}:${UVICORN_PORT}"
 uvicorn "$BACKEND_APP_MODULE" --host "$UVICORN_HOST" --port "$UVICORN_PORT" --reload
+UVICORN_EXIT=$?
+
+if [ "$UVICORN_EXIT" -ne 0 ]; then
+  echo ""
+  echo "WARN: uvicorn exited with code $UVICORN_EXIT"
+  if [ "$DEBUG_BOOTSTRAP" -eq 1 ]; then
+    echo "Debug mode: script finished without exiting early."
+    exit 0
+  fi
+  exit "$UVICORN_EXIT"
+fi

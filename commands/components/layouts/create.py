@@ -1,34 +1,31 @@
-# commands/components/layout/create_with_uploads.py
-import os
-import re
+from __future__ import annotations
+
+import asyncio
 import json
 import mimetypes
+import os
+import re
 import time
-import asyncio
-from uuid import uuid4
-from typing import Optional, List, Any
-from uuid import UUID
+from typing import Any, List, Optional
+from uuid import UUID, uuid4
 
-from fastapi import UploadFile, HTTPException
-from pydantic import BaseModel, field_validator
+from fastapi import HTTPException, UploadFile
+from pydantic import BaseModel, Field, field_validator
 
-from commands.base_command import BaseCommand
 from auth.db import SessionLocal
+from commands.base_command import BaseCommand
 from integrations.gcs.gcs import get_gcs
 from models.components.tbl_comp_layouts import CompLayout
 
-# Prefer your app logger if available; fallback to stdlib
 try:
-    from logger import logger
-except Exception:
-    import logging as _logging
+    from logger import logger as _app_logger
 
-    logger = _logging.getLogger("layouts_create_with_uploads")
-    if not logger.handlers:
-        handler = _logging.StreamHandler()
-        handler.setFormatter(_logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-        logger.addHandler(handler)
-    logger.setLevel(_logging.DEBUG)
+    logger = _app_logger.getChild("components.layouts.create_with_uploads")
+except Exception:
+    import logging
+
+    logger = logging.getLogger(__name__)
+
 
 _SAFE_CHARS_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _FALLBACK_MIME = {
@@ -48,27 +45,33 @@ def make_uuid_name(filename: str, default_stem: str) -> str:
     return f"{stem}.{uuid4()}.{ext}"
 
 
-def _resolve_content_type(upload: UploadFile) -> str:
-    if getattr(upload, "content_type", None):
-        return upload.content_type
+def resolve_content_type(upload: UploadFile) -> str:
+    ct = (getattr(upload, "content_type", None) or "").strip()
+    if ct:
+        return ct
+
     name = getattr(upload, "filename", "") or ""
     ext = os.path.splitext(name)[1].lower()
     if ext in _FALLBACK_MIME:
         return _FALLBACK_MIME[ext]
+
     guessed, _ = mimetypes.guess_type(name)
     return guessed or "application/octet-stream"
 
 
-def _normalize_tags(value) -> List[str]:
+def normalize_tags(value: Any) -> List[str]:
     if value is None:
         return []
+
     if isinstance(value, str):
         parts = [p.strip() for p in value.split(",")]
     elif isinstance(value, (list, tuple, set)):
         parts = [str(p).strip() for p in value]
     else:
         parts = []
-    items, seen = [], set()
+
+    items: List[str] = []
+    seen = set()
     for p in parts:
         if p and p not in seen:
             seen.add(p)
@@ -76,21 +79,62 @@ def _normalize_tags(value) -> List[str]:
     return items
 
 
+def file_size_bytes(upload: UploadFile) -> Optional[int]:
+    f = getattr(upload, "file", None)
+    if f is None:
+        return None
+    try:
+        cur = f.tell()
+        f.seek(0, os.SEEK_END)
+        end = f.tell()
+        f.seek(cur, os.SEEK_SET)
+        return int(end)
+    except Exception:
+        try:
+            f.seek(0, os.SEEK_SET)
+        except Exception:
+            return None
+        return None
+
+
+def validate_upload(upload: UploadFile, *, max_mb: int, allowed_types: Optional[set[str]]) -> str:
+    ct = resolve_content_type(upload)
+    size = file_size_bytes(upload)
+
+    if size is None:
+        raise HTTPException(status_code=400, detail=f"Unable to determine file size for '{upload.filename}'")
+
+    if size > max_mb * 1024 * 1024:
+        raise HTTPException(status_code=400, detail=f"File '{upload.filename}' exceeds {max_mb}MB limit")
+
+    if allowed_types is not None and ct not in allowed_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported content type '{ct}' for '{upload.filename}'",
+        )
+
+    try:
+        upload.file.seek(0)
+    except Exception:
+        pass
+
+    return ct
+
+
 class CreateCompLayoutsPayload(BaseModel):
-    name: str
-    description: Optional[str] = None
-    template_id: Optional[UUID] = None
+    name: str = Field(description="Layout name")
+    description: Optional[str] = Field(default=None, description="Layout description")
+    template_id: Optional[UUID] = Field(default=None, description="Template id")
 
-    # ✅ NEW
-    group_id: Optional[UUID] = None
-    sub_type: Optional[str] = None
+    group_id: Optional[UUID] = Field(default=None, description="Group id")
+    sub_type: Optional[str] = Field(default=None, description="Layout subtype")
 
-    tags: Optional[str] = None
-    metadata: Optional[Any] = None
+    tags: Optional[str] = Field(default=None, description="Comma-separated tags")
+    metadata: Optional[Any] = Field(default=None, description="Metadata JSON object or JSON string")
 
     @field_validator("name")
     @classmethod
-    def _name_trim(cls, v: str) -> str:
+    def name_trim(cls, v: str) -> str:
         v = (v or "").strip()
         if not v:
             raise ValueError("name is required")
@@ -98,29 +142,20 @@ class CreateCompLayoutsPayload(BaseModel):
 
     @field_validator("description", mode="before")
     @classmethod
-    def _strip_optional(cls, v):
+    def strip_optional(cls, v: Any) -> Any:
         return v.strip() if isinstance(v, str) else v
 
-    @field_validator("sub_type", mode="before")
+    @field_validator("sub_type", "tags", mode="before")
     @classmethod
-    def _sub_type_in(cls, v):
+    def strip_to_none(cls, v: Any) -> Any:
         if v is None:
             return None
         s = str(v).strip()
         return s or None
 
-    @field_validator("tags", mode="before")
-    @classmethod
-    def _tags_in(cls, v):
-        if v is None:
-            return None
-        s = str(v).strip()
-        return s or None
-
-    # ✅ important for multipart/form-data: "" -> None for UUID fields
     @field_validator("template_id", "group_id", mode="before")
     @classmethod
-    def _uuid_empty_to_none(cls, v):
+    def uuid_empty_to_none(cls, v: Any) -> Any:
         if v is None:
             return None
         if isinstance(v, str) and not v.strip():
@@ -129,11 +164,7 @@ class CreateCompLayoutsPayload(BaseModel):
 
     @field_validator("metadata", mode="before")
     @classmethod
-    def _metadata_in(cls, v):
-        """
-        Accept dict, None, or JSON string and normalize to dict/None.
-        Same semantics as content/auth commands so multipart FormData can send JSON.
-        """
+    def metadata_in(cls, v: Any) -> Any:
         if v is None or isinstance(v, dict):
             return v
 
@@ -144,26 +175,21 @@ class CreateCompLayoutsPayload(BaseModel):
             try:
                 parsed = json.loads(raw)
             except json.JSONDecodeError as e:
-                raise ValueError(f"metadata must be valid JSON if provided as string: {e}")
+                raise ValueError(f"metadata must be valid JSON if provided as string: {e}") from e
 
             if isinstance(parsed, dict):
                 return parsed
-
             return {"value": parsed}
 
         try:
             return dict(v)
-        except Exception:
-            raise ValueError("metadata must be a JSON object or JSON string")
+        except Exception as e:
+            raise ValueError("metadata must be a JSON object or JSON string") from e
 
 
 class CreateCompLayoutsWithUploadsCommand(BaseCommand):
-    """
-    Creates a CompLayout with optional uploads:
-      - thumbnail: UploadFile (single)
-      - images: List[UploadFile]
-      - attachment: UploadFile -> stored as file_link
-    """
+    """Create a CompLayout with optional uploads (thumbnail, images, attachment)."""
+
     name = "components/layouts/create_with_uploads"
     schema = CreateCompLayoutsPayload
     require_auth = True
@@ -178,10 +204,9 @@ class CreateCompLayoutsWithUploadsCommand(BaseCommand):
     ]
 
     base_folder = "uploads"
-    MAX_IMAGE_MB = 50
-    MAX_FILE_MB = 200
-    IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
-    ANY_FILE_TYPES = None
+    max_image_mb = 50
+    max_file_mb = 200
+    image_types = {"image/jpeg", "image/png", "image/webp"}
 
     async def execute(
         self,
@@ -190,134 +215,137 @@ class CreateCompLayoutsWithUploadsCommand(BaseCommand):
         images: Optional[List[UploadFile]] = None,
         attachment: Optional[UploadFile] = None,
         user_id: Optional[str] = None,
-    ):
+    ) -> dict:
         start_t = time.monotonic()
         logger.info(
             "[layouts] start name=%s user_id=%s group_id=%s sub_type=%s",
-            getattr(payload, "name", None),
+            payload.name,
             user_id,
-            getattr(payload, "group_id", None),
-            getattr(payload, "sub_type", None),
+            payload.group_id,
+            payload.sub_type,
         )
 
-        gcs = get_gcs()
+        if self.require_auth and not user_id:
+            raise HTTPException(status_code=401, detail="Unauthorized (no user context).")
 
+        created_by: Optional[int] = None
+        if user_id is not None:
+            try:
+                created_by = int(user_id)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail="Invalid user context (user_id must be int-like).") from e
+
+        gcs = get_gcs()
         layout_folder_id = str(uuid4())
         dest_prefix = f"{self.base_folder}/{layout_folder_id}"
 
         thumbnail_key: Optional[str] = None
-        images_keys: Optional[List[str]] = None
+        images_keys: List[str] = []
         attachment_key: Optional[str] = None
 
-        async def _read_and_check(f: UploadFile, max_mb: int, allowed: Optional[set]):
-            if f is None:
-                return None, None
-            data = await f.read()
-            try:
-                f.file.seek(0)
-            except Exception:
-                pass
-            ct = _resolve_content_type(f)
-            size = len(data)
-            if size > max_mb * 1024 * 1024:
-                raise ValueError(f"File '{f.filename}' exceeds {max_mb}MB limit")
-            if allowed is not None and ct not in allowed:
-                raise ValueError(f"Unsupported content type '{ct}' for '{f.filename}'")
-            return data, ct
-
-        # thumbnail
-        if thumbnail:
-            _, ct = await _read_and_check(thumbnail, self.MAX_IMAGE_MB, self.IMAGE_TYPES)
-            fname = make_uuid_name(thumbnail.filename, "thumbnail")
-            res = await asyncio.to_thread(
-                gcs.upload_fileobj, thumbnail.file, fname, f"{dest_prefix}/thumbnail", False, ct
-            )
-            thumbnail_key = res["key"]
-
-        # images
-        if images:
-            images_keys = []
-            for idx, img in enumerate(images):
-                _, ct = await _read_and_check(img, self.MAX_IMAGE_MB, self.IMAGE_TYPES)
-                fname = make_uuid_name(img.filename, f"img{idx:03d}")
-                res = await asyncio.to_thread(
-                    gcs.upload_fileobj, img.file, fname, f"{dest_prefix}/images", False, ct
-                )
-                images_keys.append(res["key"])
-
-        # attachment
-        if attachment:
-            _, ct = await _read_and_check(attachment, self.MAX_FILE_MB, self.ANY_FILE_TYPES)
-            fname = make_uuid_name(attachment.filename, "file")
-            res = await asyncio.to_thread(
-                gcs.upload_fileobj, attachment.file, fname, f"{dest_prefix}/files", False, ct
-            )
-            attachment_key = res["key"]
-
-        db = SessionLocal()
         try:
-            if self.require_auth and not user_id:
-                raise HTTPException(status_code=401, detail="Unauthorized (no user context).")
+            if thumbnail:
+                ct = validate_upload(thumbnail, max_mb=self.max_image_mb, allowed_types=self.image_types)
+                fname = make_uuid_name(thumbnail.filename, "thumbnail")
+                res = await asyncio.to_thread(
+                    gcs.upload_fileobj,
+                    thumbnail.file,
+                    fname,
+                    f"{dest_prefix}/thumbnail",
+                    False,
+                    ct,
+                )
+                thumbnail_key = res.get("key")
 
-            # ✅ created_by/updated_by are Integer columns
-            created_by = None
-            updated_by = None
-            if user_id is not None:
+            if images:
+                for idx, img in enumerate(images):
+                    if not img:
+                        continue
+                    ct = validate_upload(img, max_mb=self.max_image_mb, allowed_types=self.image_types)
+                    fname = make_uuid_name(img.filename, f"img{idx:03d}")
+                    res = await asyncio.to_thread(
+                        gcs.upload_fileobj,
+                        img.file,
+                        fname,
+                        f"{dest_prefix}/images",
+                        False,
+                        ct,
+                    )
+                    k = res.get("key")
+                    if k:
+                        images_keys.append(k)
+
+            if attachment:
+                ct = validate_upload(attachment, max_mb=self.max_file_mb, allowed_types=None)
+                fname = make_uuid_name(attachment.filename, "file")
+                res = await asyncio.to_thread(
+                    gcs.upload_fileobj,
+                    attachment.file,
+                    fname,
+                    f"{dest_prefix}/files",
+                    False,
+                    ct,
+                )
+                attachment_key = res.get("key")
+
+            db = SessionLocal()
+            try:
+                row = CompLayout(
+                    name=payload.name,
+                    description=payload.description,
+                    thumbnail=thumbnail_key,
+                    images=images_keys or None,
+                    template_id=payload.template_id,
+                    file_link=attachment_key,
+                    created_by=created_by,
+                    updated_by=created_by,
+                    tags=normalize_tags(payload.tags),
+                    metadata_json=payload.metadata or None,
+                    group_id=payload.group_id,
+                    sub_type=payload.sub_type,
+                )
+
+                db.add(row)
+                db.commit()
+                db.refresh(row)
+            except Exception:
+                db.rollback()
+                logger.exception("[layouts] DB error")
+                raise
+            finally:
+                db.close()
+
+            signed_thumb: Optional[str] = None
+            signed_imgs: List[str] = []
+            signed_attach: Optional[str] = None
+
+            if thumbnail_key:
                 try:
-                    created_by = int(user_id)
-                    updated_by = int(user_id)
-                except Exception:
-                    raise HTTPException(status_code=400, detail="Invalid user context (user_id must be int-like).")
-
-            row = CompLayout(
-                name=payload.name,
-                description=payload.description,
-                thumbnail=thumbnail_key,
-                images=images_keys,
-                template_id=payload.template_id,
-                file_link=attachment_key,
-                created_by=created_by,
-                updated_by=updated_by,
-                tags=_normalize_tags(payload.tags),
-                metadata_json=payload.metadata or None,
-
-                # ✅ NEW
-                group_id=payload.group_id,
-                sub_type=payload.sub_type,
-            )
-
-            db.add(row)
-            db.commit()
-            db.refresh(row)
-
-            # signed urls (best-effort)
-            signed_thumb = None
-            signed_imgs = []
-            signed_attach = None
-            try:
-                if thumbnail_key:
                     signed_thumb = gcs.signed_get_url(thumbnail_key, expires_seconds=3600)
-            except Exception:
-                pass
-            try:
-                for k in images_keys or []:
-                    try:
-                        signed_imgs.append(gcs.signed_get_url(k, expires_seconds=3600))
-                    except Exception:
-                        signed_imgs.append(f"https://storage.googleapis.com/{gcs.bucket_name}/{k}")
-            except Exception:
-                pass
-            try:
-                if attachment_key:
-                    signed_attach = gcs.signed_get_url(attachment_key, expires_seconds=3600)
-            except Exception:
-                pass
+                except Exception:
+                    signed_thumb = f"https://storage.googleapis.com/{gcs.bucket_name}/{thumbnail_key}"
 
-            logger.info("[layouts] finished total_elapsed=%.3fs id=%s", time.monotonic() - start_t, getattr(row, "id", None))
+            for k in images_keys:
+                try:
+                    signed_imgs.append(gcs.signed_get_url(k, expires_seconds=3600))
+                except Exception:
+                    signed_imgs.append(f"https://storage.googleapis.com/{gcs.bucket_name}/{k}")
+
+            if attachment_key:
+                try:
+                    signed_attach = gcs.signed_get_url(attachment_key, expires_seconds=3600)
+                except Exception:
+                    signed_attach = f"https://storage.googleapis.com/{gcs.bucket_name}/{attachment_key}"
+
+            logger.info(
+                "[layouts] finished total_elapsed=%.3fs id=%s",
+                time.monotonic() - start_t,
+                getattr(row, "id", None),
+            )
 
             return {
                 "status": "ok",
-                "data": _comp_layouts_to_dict(row),
+                "data": comp_layout_to_dict(row),
                 "gcs": {
                     "thumbnail": signed_thumb,
                     "images": signed_imgs,
@@ -325,13 +353,8 @@ class CreateCompLayoutsWithUploadsCommand(BaseCommand):
                     "layout_id": layout_folder_id,
                 },
             }
-        except Exception:
-            db.rollback()
-            logger.exception("[layouts] DB error")
-            raise
         finally:
-            db.close()
-            for uf in [thumbnail] + (images or []) + [attachment]:
+            for uf in [thumbnail, *(images or []), attachment]:
                 try:
                     if uf and getattr(uf, "file", None) and not uf.file.closed:
                         uf.file.close()
@@ -339,16 +362,13 @@ class CreateCompLayoutsWithUploadsCommand(BaseCommand):
                     pass
 
 
-def _comp_layouts_to_dict(m: CompLayout) -> dict:
+def comp_layout_to_dict(m: CompLayout) -> dict:
     return {
         "id": str(m.id) if getattr(m, "id", None) is not None else None,
         "name": m.name,
         "description": m.description,
-
-        # ✅ NEW
         "group_id": str(getattr(m, "group_id", None)) if getattr(m, "group_id", None) else None,
         "sub_type": getattr(m, "sub_type", None),
-
         "thumbnail": m.thumbnail,
         "images": m.images,
         "template_id": str(m.template_id) if getattr(m, "template_id", None) else None,

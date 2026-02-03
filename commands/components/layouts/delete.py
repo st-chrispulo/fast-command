@@ -1,40 +1,41 @@
-import time
-from typing import Optional, List, Dict
+from __future__ import annotations
 
-from pydantic import BaseModel, field_validator
+import time
+from typing import List, Optional
+
 from fastapi import HTTPException
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func
 
-from commands.base_command import BaseCommand
 from auth.db import SessionLocal
+from commands.base_command import BaseCommand
 from models.components.tbl_comp_layouts import CompLayout
 
-# Prefer your app logger if available; fallback to stdlib
 try:
-    from logger import logger
+    from logger import logger as _app_logger
+
+    logger = _app_logger.getChild("components.layouts.delete")
 except Exception:
-    import logging as _logging
-    logger = _logging.getLogger("delete_comp_layout")
-    if not logger.handlers:
-        handler = _logging.StreamHandler()
-        handler.setFormatter(_logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-        logger.addHandler(handler)
-    logger.setLevel(_logging.DEBUG)
+    import logging
+
+    logger = logging.getLogger(__name__)
 
 
 class DeleteCompLayoutPayload(BaseModel):
-    # Accept a list of string IDs (avoid strict UUID parsing issues in Swagger/UI)
-    ids: List[str]
+    """Delete layouts by id."""
+
+    ids: List[str] = Field(description="Layout ids to delete")
 
     @field_validator("ids")
     @classmethod
-    def _validate_ids(cls, v: List[str]) -> List[str]:
+    def validate_ids(cls, v: List[str]) -> List[str]:
         if not isinstance(v, list):
             raise ValueError("ids must be a list")
         cleaned = [str(x).strip() for x in v if str(x or "").strip()]
         if not cleaned:
             raise ValueError("ids cannot be empty")
-        seen, uniq = set(), []
+        seen = set()
+        uniq: List[str] = []
         for x in cleaned:
             if x not in seen:
                 seen.add(x)
@@ -43,16 +44,7 @@ class DeleteCompLayoutPayload(BaseModel):
 
 
 class DeleteCompLayoutCommand(BaseCommand):
-    """
-    Hard-deletes one or more CompLayout rows from the database.
-    NOTE: Does NOT delete GCS objects. Handle storage cleanup separately.
-
-    NEW RULE:
-      - If sub_type == "utility":
-          - must have group_id
-          - block delete when there is more than 1 record with same group_id
-            (meaning other records still reference that shared utility group)
-    """
+    """Hard-delete CompLayout rows with a utility group guard."""
 
     name = "components/layouts/delete"
     schema = DeleteCompLayoutPayload
@@ -61,27 +53,22 @@ class DeleteCompLayoutCommand(BaseCommand):
     type = "json"
     group = "Layout"
 
-    async def execute(self, payload: DeleteCompLayoutPayload, user_id: Optional[str] = None):
+    async def execute(self, payload: DeleteCompLayoutPayload, user_id: Optional[str] = None) -> dict:
         start_t = time.monotonic()
-        logger.info("[comp_layouts/delete] start ids=%s user_id=%s", payload.ids, user_id)
+        logger.info("[layouts/delete] start ids=%s user_id=%s", payload.ids, user_id)
 
         db = SessionLocal()
         try:
-            rows: List[CompLayout] = (
-                db.query(CompLayout)
-                .filter(CompLayout.id.in_(payload.ids))
-                .all()
-            )
+            rows: List[CompLayout] = db.query(CompLayout).filter(CompLayout.id.in_(payload.ids)).all()
 
             if not rows:
-                logger.info("[comp_layouts/delete] none found ids=%s", payload.ids)
+                logger.info("[layouts/delete] none found ids=%s", payload.ids)
                 raise HTTPException(status_code=404, detail="No matching layout found")
 
             found_ids = {str(r.id) for r in rows}
             not_found = [i for i in payload.ids if i not in found_ids]
 
-            # ---- NEW: utility delete guard ----
-            utility_blocks: List[Dict[str, str]] = []
+            blocked: List[dict] = []
             for r in rows:
                 st = (getattr(r, "sub_type", None) or "").strip().lower()
                 if st != "utility":
@@ -101,32 +88,32 @@ class DeleteCompLayoutCommand(BaseCommand):
                 ) or 0
 
                 if group_count > 1:
-                    utility_blocks.append(
+                    blocked.append(
                         {
                             "id": str(r.id),
                             "group_id": str(gid),
-                            "count_in_group": str(group_count),
+                            "count_in_group": int(group_count),
                         }
                     )
 
-            if utility_blocks:
+            if blocked:
                 raise HTTPException(
                     status_code=409,
                     detail={
                         "message": "Cannot delete: one or more layouts are still referenced by other records (same group_id).",
-                        "blocked": utility_blocks,
+                        "blocked": blocked,
                     },
                 )
 
-            # ---- delete ----
             for r in rows:
                 db.delete(r)
             db.commit()
 
-            elapsed = time.monotonic() - start_t
             logger.info(
-                "[comp_layouts/delete] deleted_count=%d not_found=%d elapsed=%.3fs",
-                len(found_ids), len(not_found), elapsed
+                "[layouts/delete] deleted_count=%d not_found=%d elapsed=%.3fs",
+                len(found_ids),
+                len(not_found),
+                time.monotonic() - start_t,
             )
 
             return {
@@ -136,13 +123,12 @@ class DeleteCompLayoutCommand(BaseCommand):
                 "ids_deleted": sorted(found_ids),
                 "not_found": not_found,
             }
-
         except HTTPException:
             db.rollback()
             raise
-        except Exception as e:
-            logger.exception("[comp_layouts/delete] error - rolling back: %s", e)
+        except Exception:
             db.rollback()
+            logger.exception("[layouts/delete] error")
             raise HTTPException(status_code=500, detail="Failed to delete layout")
         finally:
             db.close()

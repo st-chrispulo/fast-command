@@ -21,5 +21,6 @@ google-cloud-storage>=2.16.0
 google-auth>=2.27.0
 google-api-core>=2.18.0
 google-resumable-media>=2.7.0
+pydantic-settings>=2.0
 
 

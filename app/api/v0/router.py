@@ -1,9 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from invoker import command_registry
+from commands.invoker import command_registry
 from fastapi import WebSocket, WebSocketDisconnect, Form, File, UploadFile, Depends
 from auth.token import verify_token
-from logger import logger
+import logging
 from sockets.socket_registry import socket_registry
 from sockets.room_state import get_sockets_in_room
 from fastapi.responses import JSONResponse
@@ -300,9 +300,9 @@ for room_name, socket_handler in socket_registry.items():
                 await handler.on_message(raw, websocket, user)
 
         except WebSocketDisconnect:
-            logger.info(f"[WebSocket:{room}] disconnected")
+            logging.info(f"[WebSocket:{room}] disconnected")
         except Exception as e:
-            logger.info(f"[WebSocket:{room}] error:", e)
+            logging.info(f"[WebSocket:{room}] error:", e)
             await websocket.close(code=1008)
         finally:
             from sockets.room_state import remove_socket_from_room

@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 from typing import Optional, Any, Dict, List, Tuple, ClassVar, Set
-from uuid import UUID
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
@@ -12,6 +13,15 @@ from integrations.gcs.gcs import get_gcs
 from models.components.tbl_comp_contents import CompContent
 from models.tbl_user_tags import UserTag
 
+try:
+    from logger import logger as _app_logger
+
+    logger = _app_logger.getChild("components.contents.get")
+except Exception:
+    import logging
+
+    logger = logging.getLogger(__name__)
+
 
 class ContentListQuery(BaseModel):
     search_term: Optional[str] = Field(default=None, description="Search over name/description")
@@ -21,40 +31,40 @@ class ContentListQuery(BaseModel):
     limit: Optional[int] = Field(default=10, ge=1, le=100, description="page size (<=100)")
     tags: Optional[str] = Field(default=None, description="Comma-separated tag names to filter by (ANY match)")
     id: Optional[str] = Field(default=None, description="Filter by specific content id (UUID)")
-
     group_id: Optional[str] = Field(default=None, description="Filter by group_id (UUID)")
     sub_type: Optional[str] = Field(default=None, description="Filter by sub_type")
 
-    ALLOWED_SORT_KEYS: ClassVar[Set[str]] = {
-        "id",
-        "name",
-        "created_at",
-        "updated_at",
-        "group_id",
-        "sub_type",
-    }
+    ALLOWED_SORT_KEYS: ClassVar[Set[str]] = {"id", "name", "created_at", "updated_at", "group_id", "sub_type"}
 
     @field_validator("id")
     @classmethod
-    def _norm_id(cls, v: Optional[str]) -> Optional[str]:
+    def validate_id(cls, v: Optional[str]) -> Optional[str]:
         if not v:
             return None
-        v = v.strip()
-        UUID(v)
-        return v
+        s = str(v).strip()
+        if not s:
+            return None
+        import uuid
+
+        uuid.UUID(s)
+        return s
 
     @field_validator("group_id")
     @classmethod
-    def _norm_group_id(cls, v: Optional[str]) -> Optional[str]:
+    def validate_group_id(cls, v: Optional[str]) -> Optional[str]:
         if not v:
             return None
-        v = v.strip()
-        UUID(v)
-        return v
+        s = str(v).strip()
+        if not s:
+            return None
+        import uuid
+
+        uuid.UUID(s)
+        return s
 
     @field_validator("sub_type", mode="before")
     @classmethod
-    def _norm_sub_type(cls, v: Optional[str]) -> Optional[str]:
+    def normalize_sub_type(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return None
         s = str(v).strip()
@@ -62,35 +72,44 @@ class ContentListQuery(BaseModel):
 
     @field_validator("sort_order")
     @classmethod
-    def _norm_order(cls, v: Optional[str]) -> str:
-        v = (v or "desc").lower()
-        return "asc" if v == "asc" else "desc"
+    def normalize_sort_order(cls, v: Optional[str]) -> str:
+        s = (v or "desc").strip().lower()
+        return "asc" if s == "asc" else "desc"
 
     @field_validator("sort_key")
     @classmethod
-    def _whitelist_sort(cls, v: Optional[str]) -> str:
-        v = (v or "created_at").lower()
-        return v if v in cls.ALLOWED_SORT_KEYS else "created_at"
+    def whitelist_sort_key(cls, v: Optional[str]) -> str:
+        s = (v or "created_at").strip().lower()
+        return s if s in cls.ALLOWED_SORT_KEYS else "created_at"
 
 
 def _apply_search(q, term: Optional[str]):
     if not term:
         return q
     like = f"%{term.strip()}%"
-    return q.filter(
-        or_(
-            CompContent.name.ilike(like),
-            CompContent.description.ilike(like),
-        )
-    )
+    return q.filter(or_(CompContent.name.ilike(like), CompContent.description.ilike(like)))
+
+
+def _apply_tags_any(q, raw_tags: Optional[str]):
+    tags_list = [t.strip() for t in (raw_tags or "").split(",") if t.strip()]
+    if not tags_list:
+        return q
+    typed_array = array(tags_list, type_=ARRAY(TEXT()))
+    return q.filter(CompContent.tags.op("&&")(typed_array))
+
+
+def _apply_filters(q, payload: ContentListQuery):
+    if payload.id:
+        q = q.filter(CompContent.id == payload.id)
+    if payload.group_id:
+        q = q.filter(CompContent.group_id == payload.group_id)
+    if payload.sub_type:
+        q = q.filter(CompContent.sub_type == payload.sub_type)
+    return q
 
 
 def _apply_sort(q, sort_key: str, sort_order: str):
-    col_expr = (
-        func.lower(CompContent.name)
-        if sort_key == "name"
-        else getattr(CompContent, sort_key, CompContent.created_at)
-    )
+    col_expr = func.lower(CompContent.name) if sort_key == "name" else getattr(CompContent, sort_key, CompContent.created_at)
     return q.order_by(asc(col_expr) if sort_order == "asc" else desc(col_expr))
 
 
@@ -100,14 +119,14 @@ def _paginate(q, page: int, limit: int) -> Tuple[List[CompContent], int]:
     return items, total
 
 
-def _iso(dt):
+def _iso(dt: Any) -> Any:
     try:
         return dt.isoformat()
     except Exception:
         return dt
 
 
-def _as_list(val) -> List[Any]:
+def _as_list(val: Any) -> List[Any]:
     return list(val or [])
 
 
@@ -122,9 +141,8 @@ def _sign_url_maybe(gcs, url: Optional[str]) -> Optional[str]:
 
 def _serialize_content(row: CompContent, gcs) -> Dict[str, Any]:
     images = _as_list(getattr(row, "images", []))
-    signed_images = [_sign_url_maybe(gcs, img) for img in images]
-
     group_id_val = getattr(row, "group_id", None)
+
     return {
         "id": str(getattr(row, "id", "")),
         "name": getattr(row, "name", None),
@@ -135,7 +153,7 @@ def _serialize_content(row: CompContent, gcs) -> Dict[str, Any]:
         "updated_at": _iso(getattr(row, "updated_at", None)),
         "created_by": getattr(row, "created_by", None),
         "thumbnail": _sign_url_maybe(gcs, getattr(row, "thumbnail", None)),
-        "images": signed_images,
+        "images": [_sign_url_maybe(gcs, img) for img in images],
         "file": _sign_url_maybe(gcs, getattr(row, "file_link", None)),
         "tags": _as_list(getattr(row, "tags", [])),
         "metadata": getattr(row, "metadata_json", None) or {},
@@ -153,17 +171,17 @@ def _serialize_tag(t: UserTag) -> Dict[str, Any]:
     }
 
 
+def _load_user_tags(session, user_id: str) -> List[Dict[str, Any]]:
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return []
+
+    tag_q = session.query(UserTag).filter(UserTag.user_id == uid).order_by(func.lower(UserTag.name).asc())
+    return [_serialize_tag(t) for t in tag_q.all()]
+
+
 class ContentGetCommand(BaseCommand):
-    """
-    GET /components/contents/get
-
-    Supports:
-      - id=<uuid>
-      - group_id=<uuid>
-      - sub_type=<string>
-      - tags overlap, search, sort, pagination
-    """
-
     name = "components/contents/get"
     schema = ContentListQuery
     require_auth = True
@@ -173,6 +191,9 @@ class ContentGetCommand(BaseCommand):
     def execute(self, payload: ContentListQuery, user_id: str):
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid token (missing user_id)")
+
+        start_t = time.monotonic() if "time" in globals() else None
+        logger.info("[components.contents.get] start user_id=%s page=%s limit=%s", user_id, payload.current_page, payload.limit)
 
         current_page = payload.current_page or 1
         limit = payload.limit or 10
@@ -192,49 +213,32 @@ class ContentGetCommand(BaseCommand):
                 gcs = get_gcs()
 
                 q = session.query(CompContent).filter(CompContent.created_by == user_id)
-
-                if payload.id:
-                    q = q.filter(CompContent.id == payload.id)
-
+                q = _apply_filters(q, payload)
                 q = _apply_search(q, payload.search_term)
+                q = _apply_tags_any(q, payload.tags)
+                q = _apply_sort(q, payload.sort_key or "created_at", payload.sort_order or "desc")
 
-                raw_tags = payload.tags or ""
-                tags_list = [t.strip() for t in raw_tags.split(",") if t.strip()]
-                if tags_list:
-                    typed_array = array(tags_list, type_=ARRAY(TEXT()))
-                    q = q.filter(CompContent.tags.op("&&")(typed_array))
-
-                if payload.group_id:
-                    q = q.filter(CompContent.group_id == payload.group_id)
-                if payload.sub_type:
-                    q = q.filter(CompContent.sub_type == payload.sub_type)
-
-                q = _apply_sort(q, payload.sort_key, payload.sort_order)
                 items, total = _paginate(q, current_page, limit)
                 resp["total_items"] = total
-
                 resp["data"] = [_serialize_content(row, gcs) for row in items]
+                resp["tagging"]["tags"] = _load_user_tags(session, user_id)
 
-                try:
-                    uid = int(user_id)
-                except (TypeError, ValueError):
-                    uid = None
+                if start_t is not None:
+                    import time as _time
 
-                if uid is not None:
-                    tag_q = (
-                        session.query(UserTag)
-                        .filter(UserTag.user_id == uid)
-                        .order_by(func.lower(UserTag.name).asc())
+                    logger.info(
+                        "[components.contents.get] ok items=%d total=%d elapsed=%.3fs",
+                        len(items),
+                        total,
+                        _time.monotonic() - start_t,
                     )
-                    resp["tagging"]["tags"] = [_serialize_tag(t) for t in tag_q.all()]
-                else:
-                    resp["tagging"]["tags"] = []
 
                 return resp
 
             except HTTPException:
                 raise
             except Exception as e:
+                logger.exception("[components.contents.get] error=%s", e)
                 resp["errors"].append(str(e))
                 resp["error_code"] = "UNEXPECTED"
                 return resp

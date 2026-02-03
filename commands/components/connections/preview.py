@@ -1,28 +1,31 @@
-# commands/components/connections/preview.py
-
 from __future__ import annotations
 
 import re
-from typing import Optional, Any, Dict, List, Set, Tuple
 from collections import defaultdict
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 import requests
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, desc
+from sqlalchemy import desc, func
 
-from commands.base_command import BaseCommand
 from auth.db import SessionLocal
+from commands.base_command import BaseCommand
+from integrations.gcs.gcs import get_gcs
 from models.components.tbl_comp_connections import CompConnection
-
-# ✅ component tables
 from models.components.tbl_comp_contents import CompContent
 from models.components.tbl_comp_layouts import CompLayout
 from models.components.tbl_comp_pages import CompPage
 
-# ✅ gcs singleton (we only use it for signing)
-from integrations.gcs.gcs import get_gcs
+try:
+    from logger import logger as _app_logger
+
+    logger = _app_logger.getChild("components.connections.preview")
+except Exception:
+    import logging
+
+    logger = logging.getLogger(__name__)
 
 
 PREVIEW_ROOT_ID = "00000000-0000-0000-0000-000000000001"
@@ -30,21 +33,24 @@ BUCKET_NAME = "solitud-upload-bucket"
 
 
 class ConnectionsPreviewQuery(BaseModel):
+    """Preview connections by enriching components and producing transformed layout code."""
+
     funnel_id: str = Field(..., description="Funnel ID (uuid)")
 
     @field_validator("funnel_id")
     @classmethod
-    def _required(cls, v: str) -> str:
-        if not v or not v.strip():
+    def validate_funnel_id(cls, v: str) -> str:
+        s = (v or "").strip()
+        if not s:
             raise ValueError("funnel_id is required")
-        return v.strip()
+        return s
 
 
-def _safe(v) -> str:
+def _safe(v: Any) -> str:
     return str(v) if v is not None else ""
 
 
-def _iso(dt):
+def _iso(dt: Any) -> Any:
     try:
         return dt.isoformat()
     except Exception:
@@ -74,7 +80,7 @@ def _serialize_connection(row: CompConnection) -> Dict[str, Any]:
     }
 
 
-_COMPONENT_SOURCES = [
+_COMPONENT_SOURCES: List[Tuple[str, Any]] = [
     ("contents", CompContent),
     ("layouts", CompLayout),
     ("pages", CompPage),
@@ -83,51 +89,48 @@ _COMPONENT_SOURCES = [
 
 def _bulk_fetch_components(session, ids: Set[str]) -> Dict[str, Dict[str, Any]]:
     """
-    component_id -> { id, component_type, name, file_link }
-    We keep file_link internally for signing/fetching, but we won't return it.
+    Fetch component metadata across component tables.
+
+    Args:
+        session: SQLAlchemy session.
+        ids: Component ids to fetch.
+
+    Returns:
+        Map of component_id -> metadata dict.
     """
     out: Dict[str, Dict[str, Any]] = {}
     remaining = set(ids)
 
-    for component_type, Model in _COMPONENT_SOURCES:
+    for component_type, model in _COMPONENT_SOURCES:
         if not remaining:
             break
 
-        rows = (
-            session.query(Model.id, Model.name, Model.file_link)
-            .filter(Model.id.in_(list(remaining)))
-            .all()
-        )
-
+        rows = session.query(model.id, model.name, model.file_link).filter(model.id.in_(list(remaining))).all()
         for rid, name, file_link in rows:
-            rid = _safe(rid)
-            if not rid or rid in out:
+            cid = _safe(rid)
+            if not cid or cid in out:
                 continue
 
-            out[rid] = {
-                "id": rid,
+            out[cid] = {
+                "id": cid,
                 "component_type": component_type,
                 "name": (name or "").strip(),
                 "file_link": (file_link or "").strip() if file_link else None,
             }
-            remaining.discard(rid)
+            remaining.discard(cid)
 
     return out
 
 
 def _object_key_from_db_value(file_link: Optional[str]) -> Optional[str]:
     """
-    DB file_link should ideally be an object key like:
-      uploads/.../files/Foo.js
+    Normalize various GCS representations into an object key.
 
-    This tolerates:
-      - https://storage.googleapis.com/<bucket>/<object>
-      - https://<bucket>.storage.googleapis.com/<object>
-      - gs://<bucket>/<object>
-      - "<bucket>/<object>"
+    Args:
+        file_link: DB file link value.
 
     Returns:
-      object key (no leading slash), or None
+        Object key (no leading slash) or None.
     """
     if not file_link:
         return None
@@ -136,51 +139,40 @@ def _object_key_from_db_value(file_link: Optional[str]) -> Optional[str]:
     if not s:
         return None
 
-    # bucket/object stored
     if s.startswith(f"{BUCKET_NAME}/"):
         s = s[len(BUCKET_NAME) + 1 :].lstrip("/")
 
-    # reject "bucket only"
     if s == BUCKET_NAME:
         return None
 
-    # gs://bucket/object
     if s.startswith("gs://"):
         rest = s[5:]
         parts = rest.split("/", 1)
         if len(parts) != 2:
             return None
-        _, obj = parts[0], parts[1]
-        obj = (obj or "").lstrip("/")
+        obj = (parts[1] or "").lstrip("/")
         if not obj:
             return None
         if obj.startswith(f"{BUCKET_NAME}/"):
             obj = obj[len(BUCKET_NAME) + 1 :].lstrip("/")
         return obj or None
 
-    # http(s) URL
     if s.startswith("http://") or s.startswith("https://"):
         u = urlparse(s)
         host = (u.netloc or "").lower()
         path = (u.path or "").lstrip("/")
 
-        # https://storage.googleapis.com/bucket/object
         if "storage.googleapis.com" in host:
             if path.startswith(f"{BUCKET_NAME}/"):
                 return path[len(BUCKET_NAME) + 1 :].lstrip("/")
             parts = path.split("/", 1)
-            if len(parts) == 2:
-                return parts[1].lstrip("/")
-            return None
+            return parts[1].lstrip("/") if len(parts) == 2 else None
 
-        # https://bucket.storage.googleapis.com/object
         if host.startswith(f"{BUCKET_NAME}."):
             return path.lstrip("/") or None
 
-        # unknown host: best-effort treat path as object
         return path.lstrip("/") or None
 
-    # otherwise: assume it's already an object key
     return s.lstrip("/") or None
 
 
@@ -194,71 +186,52 @@ def _split_dir_and_name(obj_key: str) -> Tuple[str, str]:
     return d, n
 
 
-def _sign_url_maybe(gcs, url: Optional[str]) -> Optional[str]:
-    if not url:
-        return url
+def _signed_get_url(obj_key: str) -> str:
+    gcs = get_gcs()
     try:
-        # Note: `url` is actually a GCS object key here; we return a signed URL.
-        return gcs.signed_get_url(url, expires_seconds=3600)
+        return gcs.signed_get_url(obj_key, expires_seconds=3600)
     except Exception:
-        return url
+        return obj_key
 
 
 def _fetch_text_signed(file_link: Optional[str]) -> Tuple[str, Dict[str, Any]]:
     """
-    Fetch file contents from file_link via signed URL.
+    Fetch file contents using a signed URL derived from the stored file_link.
+
+    Args:
+        file_link: DB file link.
 
     Returns:
-      (text, info)
-      info = { dir, name, url }  # url is signed (or original if signing failed)
+        Tuple of (text, info).
     """
     obj_key = _object_key_from_db_value(file_link)
     if not obj_key:
         raise ValueError(f"Missing/invalid file_link: {file_link}")
 
     d, n = _split_dir_and_name(obj_key)
-
-    gcs = get_gcs()
-    signed_url = _sign_url_maybe(gcs, obj_key)
+    signed_url = _signed_get_url(obj_key)
     if not signed_url:
         raise ValueError("Unable to sign file_link")
 
     r = requests.get(signed_url, timeout=30)
     r.raise_for_status()
     r.encoding = r.encoding or "utf-8"
-
-    info = {
-        "dir": d,
-        "name": n,
-        "url": signed_url,  # optional; remove if you don't want to expose it
-    }
-    return r.text, info
+    return r.text, {"dir": d, "name": n, "url": signed_url}
 
 
 def _to_placeholder_key(to_port_id: Optional[str]) -> Optional[str]:
-    """
-    "in-footer" -> "footer"
-    """
-    if not to_port_id:
+    s = (to_port_id or "").strip()
+    if not s:
         return None
-    s = str(to_port_id).strip()
-    if s.lower().startswith("in-"):
-        return s[3:].strip() or None
-    return None
+    return s[3:].strip() or None if s.lower().startswith("in-") else None
 
 
 def _component_ident(filename: str) -> str:
-    """
-    "MappedLandingLayout.js" -> "MappedLandingLayout"
-    "Footer.jsx" -> "Footer"
-    "why-choose.jsx" -> "WhyChoose"
-    """
     base = re.sub(r"\.(jsx|js|tsx|ts)$", "", (filename or ""), flags=re.I).strip()
     if not base:
         return "UnknownComponent"
 
-    parts = re.split(r"[^a-zA-Z0-9]+", base)
-    parts = [p for p in parts if p]
+    parts = [p for p in re.split(r"[^a-zA-Z0-9]+", base) if p]
     if not parts:
         return "UnknownComponent"
 
@@ -273,9 +246,6 @@ def _import_path(component_type: str, filename: str) -> str:
 
 
 def _insert_imports(code: str, imports: List[str]) -> str:
-    """
-    Insert new imports after existing imports, deduping exact lines.
-    """
     if not code or not imports:
         return code
 
@@ -299,37 +269,125 @@ def _insert_imports(code: str, imports: List[str]) -> str:
 
 
 def _replace_placeholder(code: str, key: str, replacement: str) -> Tuple[str, bool]:
-    """
-    Replace <PlaceHolder-key/> (case-insensitive) with replacement.
-    Returns (new_code, replaced_bool).
-    """
     if not code or not key:
         return code, False
-
     pat = re.compile(rf"<\s*placeholder-{re.escape(key)}\s*/\s*>", re.IGNORECASE)
     new_code, n = pat.subn(replacement, code)
-    return new_code, (n > 0)
+    return new_code, n > 0
+
+
+def _is_eligible(session, funnel_id: str) -> bool:
+    cnt = (
+        session.query(func.count(CompConnection.id))
+        .filter(CompConnection.funnel_id == funnel_id)
+        .filter(CompConnection.to_component_id == PREVIEW_ROOT_ID)
+        .scalar()
+        or 0
+    )
+    return cnt > 0
+
+
+def _collect_component_ids(rows: List[CompConnection]) -> Set[str]:
+    ids: Set[str] = {PREVIEW_ROOT_ID}
+    for r in rows:
+        ids.add(_safe(getattr(r, "from_component_id", "")))
+        ids.add(_safe(getattr(r, "to_component_id", "")))
+    return ids
+
+
+def _enrich_connections(
+    rows: List[CompConnection],
+    comp_map: Dict[str, Dict[str, Any]],
+    resp: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    enriched: List[Dict[str, Any]] = []
+
+    for r in rows:
+        c = _serialize_connection(r)
+
+        from_comp = comp_map.get(c["from_component_id"])
+        to_comp = comp_map.get(c["to_component_id"])
+
+        c["from_component"] = {k: v for k, v in (from_comp or {}).items() if k != "file_link"} if from_comp else None
+        c["to_component"] = {k: v for k, v in (to_comp or {}).items() if k != "file_link"} if to_comp else None
+
+        c["from_file"] = None
+        c["to_file"] = None
+        c["file_raw"] = None
+        c["file_transformed"] = None
+
+        try:
+            if from_comp and from_comp.get("file_link"):
+                text, info = _fetch_text_signed(from_comp.get("file_link"))
+                c["from_file"] = {"dir": info.get("dir"), "name": info.get("name"), "file": text}
+        except Exception as e:
+            resp["warnings"].append(
+                f"Failed to fetch from_component code for {(from_comp or {}).get('name')} ({c['from_component_id']}): {e}"
+            )
+
+        try:
+            if to_comp and to_comp.get("file_link"):
+                text, info = _fetch_text_signed(to_comp.get("file_link"))
+                c["to_file"] = {"dir": info.get("dir"), "name": info.get("name"), "file": text}
+        except Exception as e:
+            resp["warnings"].append(
+                f"Failed to fetch to_component code for {(to_comp or {}).get('name')} ({c['to_component_id']}): {e}"
+            )
+
+        enriched.append(c)
+
+    return enriched
+
+
+def _build_incoming(enriched: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    incoming: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for c in enriched:
+        incoming[c["to_component_id"]].append(c)
+    return incoming
+
+
+def _transform_layouts(
+    incoming: Dict[str, List[Dict[str, Any]]],
+    comp_map: Dict[str, Dict[str, Any]],
+    resp: Dict[str, Any],
+) -> Dict[str, Dict[str, str]]:
+    out: Dict[str, Dict[str, str]] = {}
+
+    for parent_id, edges in incoming.items():
+        parent = comp_map.get(parent_id)
+        if not parent or parent.get("component_type") != "layouts":
+            continue
+
+        try:
+            raw, _info = _fetch_text_signed(parent.get("file_link"))
+        except Exception as e:
+            resp["warnings"].append(f"Failed to fetch layout code for {parent.get('name')} ({parent_id}): {e}")
+            continue
+
+        updated = raw
+        imports: List[str] = []
+
+        for e in edges:
+            child = comp_map.get(e.get("from_component_id", "")) or {}
+            child_type = (child.get("component_type") or "").strip()
+            child_name = (child.get("name") or "").strip()
+            key = _to_placeholder_key(e.get("to_port_id"))
+
+            if not child_type or not child_name or not key:
+                continue
+
+            ident = _component_ident(child_name)
+            imports.append(f'import {ident} from "{_import_path(child_type, child_name)}";')
+            updated, _ = _replace_placeholder(updated, key, f"<{ident}/>")
+
+        updated = _insert_imports(updated, imports)
+        out[parent_id] = {"raw": raw, "transformed": updated}
+
+    return out
 
 
 class CompConnectionPreview(BaseCommand):
-    """
-    GET /components/connections/preview
-
-    - Input: funnel_id only
-    - Eligibility: exists connection where to_component_id == PREVIEW_ROOT_ID
-    - Return: ALL connections enriched (contents/layouts/pages only)
-    - Fetch raw files using SIGNED URLs (private bucket safe)
-    - Text processing:
-        For each parent layout:
-          - fetch parent layout text from file_link (signed URL)
-          - for each incoming edge into that layout:
-              - import child
-              - replace <PlaceHolder-<key>/> where key from to_port_id
-          - store original + transformed
-        Then, inject into each connection:
-          - file_raw (parent layout raw text)
-          - file_transformed (parent layout transformed text)
-    """
+    """Preview connections with component metadata and transformed layout code."""
 
     name = "components/connections/preview"
     schema = ConnectionsPreviewQuery
@@ -352,19 +410,11 @@ class CompConnectionPreview(BaseCommand):
 
         with SessionLocal() as session:
             try:
-                eligible = (
-                    (session.query(func.count(CompConnection.id))
-                     .filter(CompConnection.funnel_id == payload.funnel_id)
-                     .filter(CompConnection.to_component_id == PREVIEW_ROOT_ID)
-                     .scalar()
-                     or 0) > 0
-                )
-                if not eligible:
+                if not _is_eligible(session, payload.funnel_id):
                     return resp
 
                 resp["eligible"] = True
 
-                # Fetch ALL connections
                 rows: List[CompConnection] = (
                     session.query(CompConnection)
                     .filter(CompConnection.funnel_id == payload.funnel_id)
@@ -374,133 +424,27 @@ class CompConnectionPreview(BaseCommand):
                 if not rows:
                     return resp
 
-                # Collect ids
-                ids: Set[str] = {PREVIEW_ROOT_ID}
-                for r in rows:
-                    ids.add(_safe(getattr(r, "from_component_id", "")))
-                    ids.add(_safe(getattr(r, "to_component_id", "")))
+                comp_ids = _collect_component_ids(rows)
+                comp_map = _bulk_fetch_components(session, comp_ids)
 
-                comp_map = _bulk_fetch_components(session, ids)
+                enriched = _enrich_connections(rows, comp_map, resp)
+                incoming = _build_incoming(enriched)
+                parent_transform = _transform_layouts(incoming, comp_map, resp)
 
-                # Enrich connections
-                enriched: List[Dict[str, Any]] = []
-                for r in rows:
-                    c = _serialize_connection(r)
-
-                    from_comp = comp_map.get(c["from_component_id"])
-                    to_comp = comp_map.get(c["to_component_id"])
-
-                    # Return component metadata WITHOUT file_link
-                    c["from_component"] = (
-                        {k: v for k, v in (from_comp or {}).items() if k != "file_link"}
-                        if from_comp
-                        else None
-                    )
-                    c["to_component"] = (
-                        {k: v for k, v in (to_comp or {}).items() if k != "file_link"}
-                        if to_comp
-                        else None
-                    )
-
-                    # Per-record fetched file info (raw code) — useful for UI/debug
-                    # These are independent of the parent layout transform.
-                    c["from_file"] = None
-                    c["to_file"] = None
-
-                    try:
-                        if from_comp and from_comp.get("file_link"):
-                            text, info = _fetch_text_signed(from_comp.get("file_link"))
-                            # You said "file values is raw file code"
-                            c["from_file"] = {
-                                "dir": info.get("dir"),
-                                "name": info.get("name"),
-                                "file": text,
-                                # "url": info.get("url"),  # uncomment if you want signed URL visible
-                            }
-                    except Exception as e:
-                        resp["warnings"].append(
-                            f"Failed to fetch from_component code for {(from_comp or {}).get('name')} ({c['from_component_id']}): {e}"
-                        )
-
-                    try:
-                        if to_comp and to_comp.get("file_link"):
-                            text, info = _fetch_text_signed(to_comp.get("file_link"))
-                            c["to_file"] = {
-                                "dir": info.get("dir"),
-                                "name": info.get("name"),
-                                "file": text,
-                                # "url": info.get("url"),
-                            }
-                    except Exception as e:
-                        # Not always required (e.g., PREVIEW_ROOT has no component file)
-                        resp["warnings"].append(
-                            f"Failed to fetch to_component code for {(to_comp or {}).get('name')} ({c['to_component_id']}): {e}"
-                        )
-
-                    # Parent-layout transform outputs (based on to_component_id)
-                    c["file_raw"] = None
-                    c["file_transformed"] = None
-
-                    enriched.append(c)
-
-                # Incoming edges: parent_id -> edges
-                incoming = defaultdict(list)
-                for c in enriched:
-                    incoming[c["to_component_id"]].append(c)
-
-                # Transform parent layouts
-                parent_transform: Dict[str, Dict[str, Any]] = {}  # parent_layout_id -> {raw, transformed}
-                for parent_id, edges in incoming.items():
-                    parent = comp_map.get(parent_id)
-                    if not parent or parent.get("component_type") != "layouts":
-                        continue
-
-                    try:
-                        raw, _info = _fetch_text_signed(parent.get("file_link"))
-                    except Exception as e:
-                        resp["warnings"].append(
-                            f"Failed to fetch layout code for {parent.get('name')} ({parent_id}): {e}"
-                        )
-                        continue
-
-                    updated = raw
-                    imports: List[str] = []
-
-                    for e in edges:
-                        child = comp_map.get(e.get("from_component_id", "")) or {}
-                        child_type = (child.get("component_type") or "").strip()
-                        child_name = (child.get("name") or "").strip()
-
-                        key = _to_placeholder_key(e.get("to_port_id"))
-                        if not child_type or not child_name or not key:
-                            continue
-
-                        ident = _component_ident(child_name)
-                        imports.append(f'import {ident} from "{_import_path(child_type, child_name)}";')
-
-                        updated, _ = _replace_placeholder(updated, key, f"<{ident}/>")
-
-                    updated = _insert_imports(updated, imports)
-
-                    parent_transform[parent_id] = {
-                        "raw": raw,
-                        "transformed": updated,
-                    }
-
-                # Attach raw/transformed to each connection based on its parent (to_component_id)
                 for c in enriched:
                     parent_id = c["to_component_id"]
-                    if parent_id in parent_transform:
-                        c["file_raw"] = parent_transform[parent_id]["raw"]
-                        c["file_transformed"] = parent_transform[parent_id]["transformed"]
+                    t = parent_transform.get(parent_id)
+                    if t:
+                        c["file_raw"] = t["raw"]
+                        c["file_transformed"] = t["transformed"]
 
                 resp["data"] = enriched
                 resp["total_items"] = len(enriched)
                 return resp
-
             except HTTPException:
                 raise
             except Exception as e:
+                logger.exception("[connections] preview failed")
                 resp["errors"].append(str(e))
                 resp["error_code"] = "UNEXPECTED"
                 return resp
