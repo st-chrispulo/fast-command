@@ -1,17 +1,9 @@
 from __future__ import annotations
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Table, Text, func
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
-from sqlalchemy.orm import declarative_base
 
-Base = declarative_base()
-
-tbl_users = Table(
-    "tbl_users",
-    Base.metadata,
-    Column("id", Integer, primary_key=True),
-    extend_existing=True,
-)
+from auth.db import Base
 
 
 class CompAuthentication(Base):
@@ -24,16 +16,8 @@ class CompAuthentication(Base):
     group_id = Column(UUID(as_uuid=True), nullable=True)
     sub_type = Column(String(100), nullable=True)
 
-    created_by = Column(
-        Integer,
-        ForeignKey("tbl_users.id", onupdate="CASCADE", ondelete="SET NULL"),
-        nullable=True,
-    )
-    updated_by = Column(
-        Integer,
-        ForeignKey("tbl_users.id", onupdate="CASCADE", ondelete="SET NULL"),
-        nullable=True,
-    )
+    created_by = Column(Integer, ForeignKey("tbl_users.id", onupdate="CASCADE", ondelete="SET NULL"), nullable=True)
+    updated_by = Column(Integer, ForeignKey("tbl_users.id", onupdate="CASCADE", ondelete="SET NULL"), nullable=True)
 
     thumbnail = Column(Text, nullable=True)
     images = Column(JSONB, nullable=True)

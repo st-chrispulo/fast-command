@@ -1,15 +1,25 @@
-from commands.base_command import BaseCommand
-from fastapi import HTTPException
-from auth.db import SessionLocal
-from sqlalchemy import text
+from __future__ import annotations
+
 from datetime import datetime
+
+from fastapi import HTTPException
+
+from auth.db import SessionLocal
+from commands.base_command import BaseCommand
+from models.tbl_user_github import UserGithub
+from models.tbl_users import User
+
+try:
+    from logger import logger as _app_logger
+
+    logger = _app_logger.getChild("components.authentications.me")
+except Exception:
+    import logging
+
+    logger = logging.getLogger(__name__)
 
 
 def _mask_email(email: str) -> str:
-    """
-    Return a lightly masked email to avoid exposing full PII.
-    e.g., "j*****e@gmail.com"
-    """
     if not email or "@" not in email:
         return email or ""
     local, domain = email.split("@", 1)
@@ -18,6 +28,14 @@ def _mask_email(email: str) -> str:
     else:
         masked_local = local[0] + "*" * (len(local) - 2) + local[-1]
     return f"{masked_local}@{domain}"
+
+
+def _iso(v):
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.isoformat()
+    return v
 
 
 class MeCommand(BaseCommand):
@@ -31,58 +49,48 @@ class MeCommand(BaseCommand):
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid token")
 
-        with SessionLocal() as session:
-            row = session.execute(
-                text(
-                    """
-                    SELECT
-                        u.id                  AS user_id,
-                        u.username            AS username,
-                        u.email               AS email,
-                        u.created_at          AS created_at,
+        db = SessionLocal()
+        try:
+            user = (
+                db.query(User)
+                .filter(User.id == int(user_id))
+                .first()
+            )
 
-                        g.login               AS gh_login,
-                        g.name                AS gh_name,
-                        g.email               AS gh_email,
-                        g.avatar_url          AS gh_avatar_url,
-                        g.installed_at        AS gh_installed_at,
-                        g.last_synced_at      AS gh_last_synced_at
-                    FROM tbl_users u
-                    LEFT JOIN tbl_user_github g
-                      ON g.user_id = u.id
-                    WHERE u.id = :uid
-                    """
-                ),
-                {"uid": user_id},
-            ).mappings().first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
 
-        if not row:
-            raise HTTPException(status_code=404, detail="User not found")
+            gh = (
+                db.query(UserGithub)
+                .filter(UserGithub.user_id == user.id)
+                .first()
+            )
 
-        # Build a non-sensitive user payload (no password)
-        user_payload = {
-            "id": row["user_id"],
-            "username": row["username"],
-            # If you prefer not to return any email, remove the next two lines:
-            "email_masked": _mask_email(row["email"]),
-            "created_at": row["created_at"].isoformat() if isinstance(row["created_at"], datetime) else row["created_at"],
-        }
-
-        # GitHub summary (no tokens, no raw ids unless you want to expose login only)
-        has_github = row["gh_login"] is not None
-        github_payload = None
-        if has_github:
-            github_payload = {
-                "login": row["gh_login"],
-                "name": row["gh_name"],
-                "email_masked": _mask_email(row["gh_email"]) if row["gh_email"] else None,
-                "avatar_url": row["gh_avatar_url"],
-                "installed_at": row["gh_installed_at"].isoformat() if isinstance(row["gh_installed_at"], datetime) else row["gh_installed_at"],
-                "last_synced_at": row["gh_last_synced_at"].isoformat() if isinstance(row["gh_last_synced_at"], datetime) else row["gh_last_synced_at"],
+            user_payload = {
+                "id": user.id,
+                "username": user.username,
+                "email_masked": _mask_email(user.email),
+                "created_at": _iso(user.created_at),
             }
 
-        return {
-            "user": user_payload,
-            "has_github": has_github,
-            "github": github_payload,
-        }
+            has_github = gh is not None
+            github_payload = None
+            if has_github:
+                github_payload = {
+                    "login": gh.login,
+                    "name": gh.name,
+                    "email_masked": _mask_email(str(gh.email)) if gh.email else None,
+                    "avatar_url": gh.avatar_url,
+                    "installed_at": _iso(gh.installed_at),
+                    "last_synced_at": _iso(gh.last_synced_at),
+                }
+
+            logger.info("Me fetched", extra={"user_id": user.id, "has_github": has_github})
+
+            return {
+                "user": user_payload,
+                "has_github": has_github,
+                "github": github_payload,
+            }
+        finally:
+            db.close()

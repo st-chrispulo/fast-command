@@ -4,6 +4,7 @@ from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Uni
 from sqlalchemy.orm import relationship
 
 from auth.db import Base
+from models.tbl_users import User
 
 try:
     from logger import logger as _app_logger
@@ -13,13 +14,6 @@ except Exception:
     import logging
 
     logger = logging.getLogger(__name__)
-
-
-class User(Base):
-    __tablename__ = "tbl_users"
-    __table_args__ = {"extend_existing": True}
-
-    id = Column(Integer, primary_key=True)
 
 
 class UserPermission(Base):

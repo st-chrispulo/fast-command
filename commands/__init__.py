@@ -1,4 +1,3 @@
-from .say_hello import SayHelloCommand
 from .login import LoginCommand
 from .create_user import CreateUserCommand
 from .refresh_token import RefreshTokenCommand
@@ -57,3 +56,15 @@ from .components.connections.create import CreateCompConnectionsCommand
 from .components.connections.delete import DeleteCompConnectionsCommand
 from .components.connections.get import ConnectionsGetCommand
 from .components.connections.preview import CompConnectionPreview
+from .components.connections.live_preview import LivePreviewCommand
+
+from commands.socket.members.join import JoinRoomCommand
+from commands.socket.members.leave import LeaveRoomCommand
+from commands.socket.rooms.create import CreateSocketRoomCommand
+from commands.socket.rooms.list import ListSocketRoomsCommand
+from commands.socket.rooms.validate_token import ValidateRoomTokenCommand
+from commands.socket.servers.create import CreateSocketServerCommand
+from commands.socket.servers.list import ListSocketServersCommand
+from commands.socket.servers.heartbeat import HeartbeatServerCommand
+from commands.auth.internal_auth_token import InternalAuthTokenCommand
+

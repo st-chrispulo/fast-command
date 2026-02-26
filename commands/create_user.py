@@ -1,31 +1,31 @@
-from commands.base_command import BaseCommand
-from auth.db import SessionLocal
-from passlib.context import CryptContext
-from fastapi import HTTPException
-from sqlalchemy import text
-from pydantic import BaseModel, EmailStr, field_validator
+from __future__ import annotations
 
-# use bcrypt_sha256 for new hashes, but still verify legacy bcrypt if needed
-pwd_context = CryptContext(
-    schemes=["bcrypt_sha256", "bcrypt"],
-    deprecated="auto",
-)
+from fastapi import HTTPException
+from passlib.context import CryptContext
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+from auth.db import SessionLocal
+from commands.base_command import BaseCommand
+from models.tbl_users import User
+
+try:
+    from logger import logger as _app_logger
+
+    logger = _app_logger.getChild("components.authentications.create_user")
+except Exception:
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+pwd_context = CryptContext(schemes=["bcrypt_sha256", "bcrypt"], deprecated="auto")
+
 
 class CreateUserPayload(BaseModel):
-    email: str
-    username: str
-    password: str
+    """Payload for creating a user."""
 
-    @field_validator("email")
-    @classmethod
-    def validate_email(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("Email must not be empty")
-        try:
-            EmailStr.validate(v)
-        except Exception:
-            raise ValueError("Invalid email format")
-        return v
+    email: EmailStr
+    username: str = Field(min_length=3, max_length=20)
+    password: str = Field(min_length=6)
 
     @field_validator("username")
     @classmethod
@@ -33,24 +33,19 @@ class CreateUserPayload(BaseModel):
         v = v.strip()
         if not v:
             raise ValueError("Username must not be empty")
-        if len(v) < 3:
-            raise ValueError("Username must be at least 3 characters")
-        if len(v) > 20:
-            raise ValueError("Username must not exceed 20 characters")
         return v
 
     @field_validator("password")
     @classmethod
     def validate_password(cls, v: str) -> str:
-        # Do NOT strip() passwords — user input should be preserved exactly
         if not v:
             raise ValueError("Password must not be empty")
-        if len(v) < 6:
-            raise ValueError("Password must be at least 6 characters")
         return v
 
 
 class CreateUserCommand(BaseCommand):
+    """Creates a new user record."""
+
     name = "create_user"
     schema = CreateUserPayload
     require_auth = False
@@ -58,31 +53,20 @@ class CreateUserCommand(BaseCommand):
     def run(self, payload: CreateUserPayload):
         db = SessionLocal()
         try:
-            # Check if email already exists
-            existing = db.execute(
-                text("SELECT 1 FROM tbl_users WHERE email = :email"),
-                {"email": payload.email}
-            ).fetchone()
-
-            if existing:
+            exists = db.query(User.id).filter(User.email == str(payload.email)).first()
+            if exists:
                 raise HTTPException(status_code=400, detail="Email already registered")
 
-            # Hash password using bcrypt_sha256 (safe beyond 72 bytes)
-            hashed_pw = pwd_context.hash(payload.password)
-
-            db.execute(
-                text("""
-                    INSERT INTO tbl_users (email, username, password)
-                    VALUES (:email, :username, :password)
-                """),
-                {
-                    "email": payload.email,
-                    "username": payload.username,
-                    "password": hashed_pw
-                }
+            user = User(
+                email=str(payload.email),
+                username=payload.username,
+                password=pwd_context.hash(payload.password),
             )
+
+            db.add(user)
             db.commit()
 
+            logger.info("User created", extra={"user_id": user.id, "email": user.email})
             return {"status": "User created successfully"}
         finally:
             db.close()

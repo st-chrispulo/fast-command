@@ -5,12 +5,7 @@ from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
 
-tbl_users = Table(
-    "tbl_users",
-    Base.metadata,
-    Column("id", Integer, primary_key=True),
-    extend_existing=True,
-)
+
 
 
 class UserTag(Base):

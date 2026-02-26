@@ -1,22 +1,69 @@
-from commands import SayHelloCommand, LoginCommand, CreateUserCommand, LogoutCommand, \
-    RefreshTokenCommand, MeCommand, UploadUserAvatarCommand, GenerateSecureDownloadLinkCommand, AddRoleCommand, \
-    AssignRoleToUserCommand, GetCommandNamesCommand, SyncPermissionCommand, TransformTemplateRenderCommand, \
-    RegisterGithubUserCommand, GithubSignInCommand, GithubStartCommand, CreateCompContentsWithUploadsCommand, \
-    UpdateComponentWithUploadsCommand, DeleteCompContentCommand, ContentGetCommand, TagDeleteCommand, \
-    TagListActiveCommand, TagCreateCommand, CreateCompPagesWithUploadsCommand, CreateCompLayoutsWithUploadsCommand, \
-    UpdateLayoutWithUploadsCommand, DeleteCompLayoutCommand, LayoutGetCommand, CreateCompPagesWithUploadsCommand, \
-    UpdatePageWithUploadsCommand, DeleteCompPageCommand, PageGetCommand, CreateCompAuthenticationsWithUploadsCommand, \
-    UpdateCompAuthenticationsWithUploadsCommand, DeleteCompAuthenticationsCommand, AuthenticationGetCommand, \
-    CreateCompNavigationsWithUploadsCommand, UpdateNavigationsWithUploadsCommand, DeleteCompNavigationCommand, \
-    NavigationGetCommand, CreateFunnelWithUploadsCommand, UpdateFunnelWithUploadsCommand, DeleteFunnelsCommand, \
-    FunnelGetCommand, CreateProjectWithUploadsCommand, UpdateProjectWithUploadsCommand, ProjectGetCommand, \
-    DeleteProjectsCommand, CreateCompConnectionsCommand, DeleteCompConnectionsCommand, ConnectionsGetCommand, \
-    CompConnectionPreview
+from commands import (
+    LoginCommand,
+    CreateUserCommand,
+    LogoutCommand,
+    RefreshTokenCommand,
+    MeCommand,
+    UploadUserAvatarCommand,
+    GenerateSecureDownloadLinkCommand,
+    AddRoleCommand,
+    AssignRoleToUserCommand,
+    GetCommandNamesCommand,
+    SyncPermissionCommand,
+    TransformTemplateRenderCommand,
+    RegisterGithubUserCommand,
+    GithubSignInCommand,
+    GithubStartCommand,
+    CreateCompContentsWithUploadsCommand,
+    UpdateComponentWithUploadsCommand,
+    DeleteCompContentCommand,
+    ContentGetCommand,
+    TagDeleteCommand,
+    TagListActiveCommand,
+    TagCreateCommand,
+    CreateCompPagesWithUploadsCommand,
+    CreateCompLayoutsWithUploadsCommand,
+    UpdateLayoutWithUploadsCommand,
+    DeleteCompLayoutCommand,
+    LayoutGetCommand,
+    UpdatePageWithUploadsCommand,
+    DeleteCompPageCommand,
+    PageGetCommand,
+    CreateCompAuthenticationsWithUploadsCommand,
+    UpdateCompAuthenticationsWithUploadsCommand,
+    DeleteCompAuthenticationsCommand,
+    AuthenticationGetCommand,
+    CreateCompNavigationsWithUploadsCommand,
+    UpdateNavigationsWithUploadsCommand,
+    DeleteCompNavigationCommand,
+    NavigationGetCommand,
+    CreateFunnelWithUploadsCommand,
+    UpdateFunnelWithUploadsCommand,
+    DeleteFunnelsCommand,
+    FunnelGetCommand,
+    CreateProjectWithUploadsCommand,
+    UpdateProjectWithUploadsCommand,
+    ProjectGetCommand,
+    DeleteProjectsCommand,
+    CreateCompConnectionsCommand,
+    DeleteCompConnectionsCommand,
+    ConnectionsGetCommand,
+    CompConnectionPreview,
+    CreateSocketServerCommand,
+    ListSocketServersCommand,
+    CreateSocketRoomCommand,
+    ListSocketRoomsCommand,
+    ValidateRoomTokenCommand,
+    JoinRoomCommand,
+    LeaveRoomCommand,
+    HeartbeatServerCommand,
+    InternalAuthTokenCommand,
+    LivePreviewCommand
+)
 
 command_registry = [
     CreateUserCommand(),
     LoginCommand(),
-    SayHelloCommand(),
     RefreshTokenCommand(),
     LogoutCommand(),
     MeCommand(),
@@ -64,5 +111,15 @@ command_registry = [
     CreateCompConnectionsCommand(),
     DeleteCompConnectionsCommand(),
     ConnectionsGetCommand(),
-    CompConnectionPreview()
+    # CompConnectionPreview(),
+    CreateSocketServerCommand(),
+    ListSocketServersCommand(),
+    CreateSocketRoomCommand(),
+    ListSocketRoomsCommand(),
+    ValidateRoomTokenCommand(),
+    JoinRoomCommand(),
+    LeaveRoomCommand(),
+    HeartbeatServerCommand(),
+    InternalAuthTokenCommand(),
+    LivePreviewCommand()
 ]

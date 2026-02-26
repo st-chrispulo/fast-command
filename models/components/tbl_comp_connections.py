@@ -1,23 +1,12 @@
 from __future__ import annotations
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Table, func
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from auth.db import Base
 
-tbl_users = Table(
-    "tbl_users",
-    Base.metadata,
-    Column("id", Integer, primary_key=True),
-    extend_existing=True,
-)
-
-tbl_funnels = Table(
-    "tbl_funnels",
-    Base.metadata,
-    Column("id", UUID(as_uuid=True), primary_key=True),
-    extend_existing=True,
-)
+from models.tbl_funnels import Funnel  # noqa: F401
+from models.tbl_users import User  # noqa: F401
 
 
 class CompConnection(Base):
@@ -37,11 +26,7 @@ class CompConnection(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid(), nullable=False)
 
-    funnel_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("tbl_funnels.id", onupdate="CASCADE", ondelete="CASCADE"),
-        nullable=False,
-    )
+    funnel_id = Column(UUID(as_uuid=True), ForeignKey("tbl_funnels.id", onupdate="CASCADE", ondelete="CASCADE"), nullable=False)
 
     from_node_id = Column(String, nullable=True)
     to_node_id = Column(String, nullable=True)
@@ -54,16 +39,8 @@ class CompConnection(Base):
 
     metadata_json = Column("metadata", JSONB, nullable=True)
 
-    created_by = Column(
-        Integer,
-        ForeignKey("tbl_users.id", onupdate="CASCADE", ondelete="SET NULL"),
-        nullable=True,
-    )
-    updated_by = Column(
-        Integer,
-        ForeignKey("tbl_users.id", onupdate="CASCADE", ondelete="SET NULL"),
-        nullable=True,
-    )
+    created_by = Column(Integer, ForeignKey("tbl_users.id", onupdate="CASCADE", ondelete="SET NULL"), nullable=True)
+    updated_by = Column(Integer, ForeignKey("tbl_users.id", onupdate="CASCADE", ondelete="SET NULL"), nullable=True)
 
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())

@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 from uuid import UUID
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import and_
 
-from commands.base_command import BaseCommand
 from auth.db import SessionLocal
+from commands.base_command import BaseCommand
+from integrations.socket.publisher import get_socket_publisher
 from models.components.tbl_comp_connections import CompConnection
+from models.socket.tbl_socket_rooms import SocketRoom
+from models.socket.tbl_socket_servers import SocketServer
 
 try:
     from logger import logger as _app_logger
@@ -87,6 +91,15 @@ def _comp_connection_to_dict(m: CompConnection) -> dict:
     }
 
 
+def _socket_base_url(server: SocketServer) -> str:
+    host = (getattr(server, "host", None) or "").strip()
+    if not host:
+        return ""
+    if host.startswith("http://") or host.startswith("https://"):
+        return host.rstrip("/")
+    return f"http://{host}".rstrip("/")
+
+
 class CreateCompConnectionsPayload(BaseModel):
     """Create a connection record for a funnel."""
 
@@ -126,6 +139,52 @@ class CreateCompConnectionsCommand(BaseCommand):
     type = "json"
     group = "Funnel"
 
+    async def _emit_preview(self, db, funnel_id: UUID, user_id: Optional[str], data: dict) -> None:
+        publisher = get_socket_publisher()
+        fid = str(funnel_id)
+
+        rooms = (
+            db.query(SocketRoom)
+            .filter(
+                and_(
+                    SocketRoom.is_active.is_(True),
+                    SocketRoom.room_type == "preview",
+                    SocketRoom.scope_json["funnel_id"].astext == fid,
+                )
+            )
+            .all()
+        )
+
+        if not rooms:
+            return
+
+        server_ids = {getattr(r, "server_id", None) for r in rooms if getattr(r, "server_id", None)}
+        if not server_ids:
+            return
+
+        servers = db.query(SocketServer).filter(SocketServer.id.in_(list(server_ids))).all()
+        servers_by_id = {s.id: s for s in servers}
+
+        payload = {
+            "event": "connections.created",
+            "description": "Connection created",
+            "funnel_id": fid,
+            "user_id": str(user_id) if user_id else None,
+            "data": data,
+        }
+
+        for r in rooms:
+            server = servers_by_id.get(getattr(r, "server_id", None))
+            if not server or not getattr(server, "is_active", False):
+                continue
+
+            base_url = _socket_base_url(server)
+            room_key = (getattr(r, "room_key", None) or "").strip()
+            if not base_url or not room_key:
+                continue
+
+            await publisher.emit_to_room(base_url, room_key, "connections.create", payload)
+
     async def execute(self, payload: CreateCompConnectionsPayload, user_id: Optional[str] = None) -> dict:
         t0 = time.monotonic()
 
@@ -137,11 +196,7 @@ class CreateCompConnectionsCommand(BaseCommand):
         from_node_id = _extract_node_id(md, "fromNodeId")
         to_node_id = _extract_node_id(md, "toNodeId")
 
-        logger.info(
-            "[connections] create start funnel_id=%s user_id=%s",
-            str(payload.funnel_id),
-            user_id,
-        )
+        logger.info("[connections] create start funnel_id=%s user_id=%s", str(payload.funnel_id), user_id)
 
         db = SessionLocal()
         try:
@@ -162,9 +217,16 @@ class CreateCompConnectionsCommand(BaseCommand):
             db.commit()
             db.refresh(row)
 
+            data = _comp_connection_to_dict(row)
+
+            try:
+                await self._emit_preview(db, payload.funnel_id, user_id, data)
+            except Exception:
+                logger.exception("[connections] preview emit failed funnel_id=%s", str(payload.funnel_id))
+
             return {
                 "status": "ok",
-                "data": _comp_connection_to_dict(row),
+                "data": data,
                 "perf_ms": round((time.monotonic() - t0) * 1000, 2),
             }
         except HTTPException:

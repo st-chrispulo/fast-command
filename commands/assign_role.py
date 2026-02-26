@@ -1,12 +1,30 @@
-from commands.base_command import BaseCommand
-from auth.db import SessionLocal
+from __future__ import annotations
+
+from typing import List
+
 from fastapi import HTTPException
-from sqlalchemy import text
 from pydantic import BaseModel, field_validator
+
+from auth.db import SessionLocal
+from commands.base_command import BaseCommand
+from models.tbl_roles import Role
+from models.tbl_user_permissions import UserPermission
+from models.tbl_users import User
+
+try:
+    from logger import logger as _app_logger
+
+    logger = _app_logger.getChild("components.roles.assign")
+except Exception:
+    import logging
+
+    logger = logging.getLogger(__name__)
 
 
 class AssignRolePayload(BaseModel):
-    user: str  # e.g., username or email
+    """Payload for assigning a role to a user."""
+
+    user: str
     role_name: str
 
     @field_validator("user")
@@ -19,7 +37,7 @@ class AssignRolePayload(BaseModel):
 
     @field_validator("role_name")
     @classmethod
-    def validate_name(cls, v: str) -> str:
+    def validate_role_name(cls, v: str) -> str:
         v = v.strip()
         if not v:
             raise ValueError("Role name must not be empty")
@@ -27,47 +45,72 @@ class AssignRolePayload(BaseModel):
 
 
 class AssignRoleToUserCommand(BaseCommand):
+    """Assigns a role's command permissions to a user."""
+
     name = "role/assign"
     schema = AssignRolePayload
 
     def run(self, payload: AssignRolePayload):
         db = SessionLocal()
         try:
+            user = (
+                db.query(User)
+                .filter(User.username == payload.user)
+                .first()
+            )
 
-            user_row = db.execute(
-                text("SELECT id FROM tbl_users WHERE username = :username"),
-                {"username": payload.user}
-            ).fetchone()
+            if not user:
+                user = (
+                    db.query(User)
+                    .filter(User.email == payload.user)
+                    .first()
+                )
 
-            if not user_row:
+            if not user:
                 raise HTTPException(status_code=404, detail=f"User '{payload.user}' not found.")
 
-            user_id = user_row.id
-
-            role = db.execute(
-                text("SELECT command_names FROM tbl_roles WHERE name = :name"),
-                {"name": payload.role_name}
-            ).fetchone()
+            role = (
+                db.query(Role)
+                .filter(Role.name == payload.role_name)
+                .first()
+            )
 
             if not role:
                 raise HTTPException(status_code=404, detail=f"Role '{payload.role_name}' not found.")
 
-            command_names = role.command_names or []
-            for command in command_names:
-                db.execute(
-                    text("""
-                        INSERT INTO tbl_user_permissions (user_id, command_name, granted_by)
-                        VALUES (:user_id, :command_name, :granted_by)
-                        ON CONFLICT (user_id, command_name) DO NOTHING
-                    """),
-                    {
-                        "user_id": user_id,
-                        "command_name": command,
-                        "granted_by": user_id
-                    }
+            commands: List[str] = role.command_names or []
+            if not commands:
+                logger.info(
+                    "Role has no commands",
+                    extra={"user_id": user.id, "role_id": role.id, "role_name": role.name},
                 )
+                return {"status": f"Role '{payload.role_name}' assigned to user '{payload.user}'"}
+
+            rows = [
+                UserPermission(user_id=user.id, command_name=cmd, granted_by=user.id)
+                for cmd in commands
+                if cmd and cmd.strip()
+            ]
+
+            for row in rows:
+                exists = (
+                    db.query(UserPermission.id)
+                    .filter(
+                        UserPermission.user_id == row.user_id,
+                        UserPermission.command_name == row.command_name,
+                    )
+                    .first()
+                )
+                if not exists:
+                    db.add(row)
 
             db.commit()
+
+            logger.info(
+                "Role assigned",
+                extra={"user_id": user.id, "role_id": role.id, "role_name": role.name, "command_count": len(rows)},
+            )
+
             return {"status": f"Role '{payload.role_name}' assigned to user '{payload.user}'"}
         finally:
             db.close()

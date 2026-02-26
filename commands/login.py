@@ -1,42 +1,46 @@
-from commands.base_command import BaseCommand
-from auth.db import SessionLocal
-from auth.token import (
-    create_access_token, create_refresh_token,
-    REFRESH_TOKEN_EXPIRE_DAYS, TOKEN_EXPIRE_MINUTES
-)
-from passlib.context import CryptContext
-from fastapi import HTTPException
-from sqlalchemy import text
-from datetime import datetime, timedelta
-from pydantic import BaseModel, field_validator
+from __future__ import annotations
 
-# Support legacy bcrypt, prefer bcrypt_sha256 for new hashes
-pwd_context = CryptContext(
-    schemes=["bcrypt_sha256", "bcrypt"],
-    deprecated="auto",
-)
+from datetime import datetime, timedelta
+
+from fastapi import HTTPException
+from passlib.context import CryptContext
+from pydantic import BaseModel, EmailStr, field_validator
+
+from auth.db import SessionLocal
+from auth.token import REFRESH_TOKEN_EXPIRE_DAYS, TOKEN_EXPIRE_MINUTES, create_access_token, create_refresh_token
+from commands.base_command import BaseCommand
+from models.tbl_tokens import Token
+from models.tbl_users import User
+
+try:
+    from logger import logger as _app_logger
+
+    logger = _app_logger.getChild("components.authentications.login")
+except Exception:
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+pwd_context = CryptContext(schemes=["bcrypt_sha256", "bcrypt"], deprecated="auto")
+
 
 class LoginPayload(BaseModel):
-    email: str
-    password: str
+    """Payload for user login."""
 
-    @field_validator("email")
-    @classmethod
-    def validate_email(cls, v: str) -> str:
-        v = v.strip()
-        if not v:
-            raise ValueError("Email must not be empty")
-        return v
+    email: EmailStr
+    password: str
 
     @field_validator("password")
     @classmethod
     def validate_password(cls, v: str) -> str:
-        # DO NOT strip() passwords — leading/trailing spaces are valid characters
         if v is None or v == "":
             raise ValueError("Password must not be empty")
         return v
 
+
 class LoginCommand(BaseCommand):
+    """Authenticates a user and issues access/refresh tokens."""
+
     name = "login"
     schema = LoginPayload
     require_auth = False
@@ -44,48 +48,42 @@ class LoginCommand(BaseCommand):
     def run(self, payload: LoginPayload):
         db = SessionLocal()
         try:
-            user = db.execute(
-                text("SELECT id, password FROM tbl_users WHERE email = :email"),
-                {"email": payload.email}
-            ).fetchone()
+            user = (
+                db.query(User.id, User.password)
+                .filter(User.email == str(payload.email))
+                .first()
+            )
 
             if not user:
                 raise HTTPException(status_code=401, detail="Invalid credentials")
 
-            # Verify against either bcrypt_sha256 or bcrypt (automatically)
             try:
                 if not pwd_context.verify(payload.password, user.password):
                     raise HTTPException(status_code=401, detail="Invalid credentials")
             except ValueError:
-                # Catches bcrypt's 72-byte error or malformed hashes
                 raise HTTPException(status_code=401, detail="Invalid credentials")
 
-            user_id = user.id
+            user_id = int(user.id)
             access_token = create_access_token({"user_id": user_id})
             refresh_token = create_refresh_token({"user_id": user_id})
 
-            expires_at = datetime.utcnow() + timedelta(minutes=TOKEN_EXPIRE_MINUTES)
-            refresh_token_exp = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+            now = datetime.utcnow()
+            expires_at = now + timedelta(minutes=TOKEN_EXPIRE_MINUTES)
+            refresh_token_exp = now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
 
-            db.execute(
-                text("""
-                    INSERT INTO tbl_tokens (
-                        user_id, access_token, refresh_token, scope, expires_at, refresh_token_expires_at
-                    )
-                    VALUES (
-                        :user_id, :access_token, :refresh_token, :scope, :expires_at, :refresh_token_expires_at
-                    )
-                """),
-                {
-                    "user_id": user_id,
-                    "access_token": access_token,
-                    "refresh_token": refresh_token,
-                    "scope": "default",
-                    "expires_at": expires_at,
-                    "refresh_token_expires_at": refresh_token_exp
-                }
+            token_row = Token(
+                user_id=user_id,
+                access_token=access_token,
+                refresh_token=refresh_token,
+                scope="default",
+                expires_at=expires_at,
+                refresh_token_expires_at=refresh_token_exp,
             )
+
+            db.add(token_row)
             db.commit()
+
+            logger.info("Login successful", extra={"user_id": user_id, "scope": token_row.scope})
 
             return {
                 "access_token": access_token,
