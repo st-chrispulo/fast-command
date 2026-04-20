@@ -40,11 +40,20 @@ def _scopes_key() -> str:
 
 def _is_valid() -> bool:
     if not _STATE.access_token:
+        logger.debug("internal token invalid: missing token")
         return False
+
     if _STATE.scopes_key != _scopes_key():
+        logger.debug("internal token invalid: scopes changed")
         return False
+
     skew = float(settings.internal_token_refresh_skew_seconds or 0)
-    return time.time() < float(_STATE.expires_at or 0) - skew
+    if time.time() >= float(_STATE.expires_at or 0) - skew:
+        logger.debug("internal token invalid: expired")
+        return False
+
+    logger.debug("internal token valid: using cached token")
+    return True
 
 
 async def fetch_token() -> Tuple[str, float]:
@@ -78,6 +87,12 @@ async def fetch_token() -> Tuple[str, float]:
 
 
 async def get_access_token(*, force_refresh: bool = False) -> str:
+    logger.info(
+        "[socket] token check cached=%s expires_at=%s scopes=%s",
+        bool(_STATE.access_token),
+        _STATE.expires_at,
+        _STATE.scopes_key,
+    )
     if not force_refresh and _is_valid():
         return _STATE.access_token
 

@@ -1,0 +1,36 @@
+{
+  "type": "chat_message",
+  "input": "our issue is we this several clients that have quite big catalog like 3k and it is hard to manage and tune one by one",
+  "extracted": {
+    "market_role_title": "Amazon marketing agency",
+    "responsibilities": [
+      "Help clients boost Amazon sales",
+      "Facilitate PPC campaigns"
+    ],
+    "decision_scope": "Amazon advertising and e-commerce growth services for client businesses",
+    "systems_used": [],
+    "pains": [
+      "Managing large product catalogs (3k+ items)",
+      "Difficulty tuning campaigns one by one for many products"
+    ],
+    "gains": [
+      "Boosted Amazon sales",
+      "Improved PPC campaign performance"
+    ],
+    "observed_entities": [
+      "Product catalog",
+      "PPC campaigns",
+      "Amazon clients"
+    ],
+    "open_questions": [
+      "What tools or methods do you currently use to manage large catalogs?",
+      "How much time does tuning each product take?"
+    ],
+    "interaction_summary": "The agency shares a pain point about managing and tuning PPC campaigns for clients with large product catalogs (3k+ items).",
+    "source_document": "chat_message",
+    "confidence": 0.85,
+    "assistant_reply": "That's a common challenge with large catalogs. What tools or methods do you currently use to manage and tune these campaigns?",
+    "should_ask_followup": true
+  },
+  "saved_at": "2026-03-27T11:57:02.459624+08:00"
+}

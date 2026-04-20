@@ -7,14 +7,11 @@ from uuid import UUID
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import and_
 
 from auth.db import SessionLocal
 from commands.base_command import BaseCommand
-from integrations.socket.publisher import get_socket_publisher
 from models.components.tbl_comp_connections import CompConnection
-from models.socket.tbl_socket_rooms import SocketRoom
-from models.socket.tbl_socket_servers import SocketServer
+from integrations.kafka.publisher import publish_generate_fe
 
 try:
     from logger import logger as _app_logger
@@ -91,18 +88,9 @@ def _comp_connection_to_dict(m: CompConnection) -> dict:
     }
 
 
-def _socket_base_url(server: SocketServer) -> str:
-    host = (getattr(server, "host", None) or "").strip()
-    if not host:
-        return ""
-    if host.startswith("http://") or host.startswith("https://"):
-        return host.rstrip("/")
-    return f"http://{host}".rstrip("/")
 
 
 class CreateCompConnectionsPayload(BaseModel):
-    """Create a connection record for a funnel."""
-
     funnel_id: UUID = Field(description="Target funnel id")
 
     from_component_id: UUID = Field(description="Source component id")
@@ -130,60 +118,12 @@ class CreateCompConnectionsPayload(BaseModel):
 
 
 class CreateCompConnectionsCommand(BaseCommand):
-    """Create a single connection record for a funnel."""
-
     name = "components/connections/create"
     schema = CreateCompConnectionsPayload
     require_auth = True
     method = "post"
     type = "json"
     group = "Funnel"
-
-    async def _emit_preview(self, db, funnel_id: UUID, user_id: Optional[str], data: dict) -> None:
-        publisher = get_socket_publisher()
-        fid = str(funnel_id)
-
-        rooms = (
-            db.query(SocketRoom)
-            .filter(
-                and_(
-                    SocketRoom.is_active.is_(True),
-                    SocketRoom.room_type == "preview",
-                    SocketRoom.scope_json["funnel_id"].astext == fid,
-                )
-            )
-            .all()
-        )
-
-        if not rooms:
-            return
-
-        server_ids = {getattr(r, "server_id", None) for r in rooms if getattr(r, "server_id", None)}
-        if not server_ids:
-            return
-
-        servers = db.query(SocketServer).filter(SocketServer.id.in_(list(server_ids))).all()
-        servers_by_id = {s.id: s for s in servers}
-
-        payload = {
-            "event": "connections.created",
-            "description": "Connection created",
-            "funnel_id": fid,
-            "user_id": str(user_id) if user_id else None,
-            "data": data,
-        }
-
-        for r in rooms:
-            server = servers_by_id.get(getattr(r, "server_id", None))
-            if not server or not getattr(server, "is_active", False):
-                continue
-
-            base_url = _socket_base_url(server)
-            room_key = (getattr(r, "room_key", None) or "").strip()
-            if not base_url or not room_key:
-                continue
-
-            await publisher.emit_to_room(base_url, room_key, "connections.create", payload)
 
     async def execute(self, payload: CreateCompConnectionsPayload, user_id: Optional[str] = None) -> dict:
         t0 = time.monotonic()
@@ -218,15 +158,25 @@ class CreateCompConnectionsCommand(BaseCommand):
             db.refresh(row)
 
             data = _comp_connection_to_dict(row)
-
-            try:
-                await self._emit_preview(db, payload.funnel_id, user_id, data)
-            except Exception:
-                logger.exception("[connections] preview emit failed funnel_id=%s", str(payload.funnel_id))
+            kafka_queued = publish_generate_fe(
+                funnel_id=str(row.funnel_id),
+                metadata={
+                    **(md or {}),
+                    "event": "connection_created",
+                    "connection_id": str(row.id),
+                    "from_node_id": row.from_node_id,
+                    "to_node_id": row.to_node_id,
+                    "from_component_id": str(row.from_component_id),
+                    "from_port_id": row.from_port_id,
+                    "to_component_id": str(row.to_component_id),
+                    "to_port_id": row.to_port_id,
+                },
+            )
 
             return {
                 "status": "ok",
                 "data": data,
+                "kafka_queued": kafka_queued,
                 "perf_ms": round((time.monotonic() - t0) * 1000, 2),
             }
         except HTTPException:

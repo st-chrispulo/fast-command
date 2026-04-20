@@ -1,0 +1,20 @@
+{
+  "type": "chat_message",
+  "input": "ABC Growth Solutions is a small-to-medium business that provides accounting, payroll, and business registration services for startups and growing companies. Their goal is to help business owners simplify operations, stay compliant, and focus on growing their business. They position themselves as a reliable and approachable service partner for entrepreneurs who need back-office support. Their role in the market is to support businesses by handling essential administrative and financial processes that are necessary for smooth day-to-day operations. They act as a trusted service provider that helps clients save time, reduce errors, and stay organized. Instead of clients struggling with paperwork, compliance, and financial tracking, the company takes care of these functions efficiently.",
+  "extracted": {
+    "market_role": {
+      "title": "",
+      "responsibilities": [],
+      "decision_scope": "",
+      "systems_used": [],
+      "confidence": 0.0
+    },
+    "pains": [],
+    "gains": [],
+    "observed_entities": [],
+    "open_questions": [],
+    "interaction_summary": "",
+    "source_document": "chat_message"
+  },
+  "saved_at": "2026-03-27T00:06:58.237886+08:00"
+}

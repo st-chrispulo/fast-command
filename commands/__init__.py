@@ -68,3 +68,10 @@ from commands.socket.servers.list import ListSocketServersCommand
 from commands.socket.servers.heartbeat import HeartbeatServerCommand
 from commands.auth.internal_auth_token import InternalAuthTokenCommand
 
+from commands.google.start import GoogleStartCommand
+from commands.google.signin import GoogleSignInCommand
+from commands.google.register import RegisterGoogleUserCommand
+
+from commands.partner.chat import RunPartnerChatCommand
+from commands.partner.get_chat import GetPartnerChatCommand
+

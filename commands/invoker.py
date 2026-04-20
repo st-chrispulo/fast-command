@@ -58,7 +58,12 @@ from commands import (
     LeaveRoomCommand,
     HeartbeatServerCommand,
     InternalAuthTokenCommand,
-    LivePreviewCommand
+    LivePreviewCommand,
+    GoogleStartCommand,
+    RegisterGoogleUserCommand,
+    GoogleSignInCommand,
+    RunPartnerChatCommand,
+    GetPartnerChatCommand
 )
 
 command_registry = [
@@ -121,5 +126,10 @@ command_registry = [
     LeaveRoomCommand(),
     HeartbeatServerCommand(),
     InternalAuthTokenCommand(),
-    LivePreviewCommand()
+    LivePreviewCommand(),
+    RegisterGoogleUserCommand(),
+    GoogleStartCommand(),
+    GoogleSignInCommand(),
+    RunPartnerChatCommand(),
+    GetPartnerChatCommand()
 ]

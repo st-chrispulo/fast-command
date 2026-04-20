@@ -1,0 +1,215 @@
+{
+  "customer_id": "b2bstartup",
+  "created_at": "2026-03-26T23:19:17.643940+08:00",
+  "last_updated": "2026-03-26T23:37:13.066570+08:00",
+  "market_role": {
+    "title": "Web Solutions & Business Consultant for Physical Businesses",
+    "responsibilities": [
+      "Help startup companies grow",
+      "Provide business model guidance",
+      "Offer framework support",
+      "Client onboarding",
+      "Provide web-based solutions",
+      "Consultation based on pain points",
+      "Suggest pain killer solutions for customer pains"
+    ],
+    "decision_scope": "B2B service delivery to physical businesses (dental clinics, pet shops, car care) with web-based solutions and consultation services; industry-agnostic but currently focused on physical retail/service businesses",
+    "systems_used": [
+      "Website (for client onboarding)",
+      "Automated client onboarding system",
+      "Web-based solution platform",
+      "Consultation framework"
+    ],
+    "confidence": 0.85
+  },
+  "pains": [
+    {
+      "statement": "unknown",
+      "severity": "unknown",
+      "frequency": "unknown",
+      "confidence": 0.0
+    },
+    {
+      "statement": "Hard time onboarding clients during startup phase",
+      "severity": "high",
+      "frequency": "ongoing",
+      "confidence": 0.9
+    },
+    {
+      "statement": "Target customers have various pain points that need web-based solutions and consultation support",
+      "severity": "medium",
+      "frequency": "ongoing",
+      "confidence": 0.75
+    }
+  ],
+  "gains": [
+    {
+      "statement": "Help startup companies grow with business model and framework",
+      "priority": "high",
+      "success_metric": "Startup growth achieved through business model and framework implementation",
+      "confidence": 0.85
+    },
+    {
+      "statement": "Successful client onboarding with complete information collection",
+      "priority": "high",
+      "success_metric": "Clients completing onboarding with basic info, job/role, pains, and gains documented",
+      "confidence": 0.85
+    },
+    {
+      "statement": "Automate manual parts of client onboarding process",
+      "priority": "high",
+      "success_metric": "Streamlined client onboarding with reduced manual effort",
+      "confidence": 0.9
+    },
+    {
+      "statement": "Deliver web-based solutions to physical businesses",
+      "priority": "high",
+      "success_metric": "Successful implementation of web-based solution for target business",
+      "confidence": 0.85
+    },
+    {
+      "statement": "Provide consultation based on customer pain points",
+      "priority": "high",
+      "success_metric": "Customers receive actionable consultation addressing their specific pain points",
+      "confidence": 0.85
+    },
+    {
+      "statement": "Offer pain killer suggestions for customer challenges",
+      "priority": "medium",
+      "success_metric": "Customers implement suggested solutions to resolve pain points",
+      "confidence": 0.75
+    }
+  ],
+  "observed_entities": [
+    {
+      "name": "Client Onboarding Website",
+      "kind": "digital_platform",
+      "description": "Website used for onboarding clients during startup phase",
+      "attributes": [
+        {
+          "name": "basic_information",
+          "datatype": "object",
+          "required": true,
+          "description": "Client basic information fields",
+          "confidence": 0.85
+        },
+        {
+          "name": "job_role",
+          "datatype": "string",
+          "required": true,
+          "description": "Customer job or role in the market",
+          "confidence": 0.9
+        },
+        {
+          "name": "pains",
+          "datatype": "text",
+          "required": true,
+          "description": "Customer pain points and challenges",
+          "confidence": 0.85
+        },
+        {
+          "name": "gains",
+          "datatype": "text",
+          "required": true,
+          "description": "What customers expect from the startup service",
+          "confidence": 0.85
+        }
+      ],
+      "relationships": [
+        {
+          "type": "collects_from",
+          "target": "client"
+        },
+        {
+          "type": "supports",
+          "target": "market_role"
+        }
+      ],
+      "confidence": 0.85
+    },
+    {
+      "name": "Web-Based Solution Platform",
+      "kind": "digital_platform",
+      "description": "Primary service delivery platform for physical businesses including dental clinics, pet shops, car care",
+      "attributes": [
+        {
+          "name": "industry_focus",
+          "datatype": "enum",
+          "required": false,
+          "description": "Physical businesses (dental clinic, pet shop, car care)",
+          "confidence": 0.85
+        },
+        {
+          "name": "service_type",
+          "datatype": "enum",
+          "required": true,
+          "description": "Web-based solution, consultation, pain killer suggestions",
+          "confidence": 0.9
+        }
+      ],
+      "relationships": [
+        {
+          "type": "serves",
+          "target": "physical_business"
+        },
+        {
+          "type": "supports",
+          "target": "market_role"
+        }
+      ],
+      "confidence": 0.85
+    },
+    {
+      "name": "Target Customer Segments",
+      "kind": "customer_group",
+      "description": "Physical businesses including dental clinics, pet shops, car care services",
+      "attributes": [
+        {
+          "name": "business_type",
+          "datatype": "enum",
+          "required": true,
+          "description": "Dental clinic, pet shop, car care, etc.",
+          "confidence": 0.85
+        },
+        {
+          "name": "industry_relevance",
+          "datatype": "boolean",
+          "required": false,
+          "description": "Industry is irrelevant for service delivery",
+          "confidence": 0.75
+        }
+      ],
+      "relationships": [
+        {
+          "type": "targeted_by",
+          "target": "web_solution_platform"
+        }
+      ],
+      "confidence": 0.8
+    }
+  ],
+  "open_questions": [
+    "What specific frameworks do you provide?",
+    "Which industries or startup stages do you focus on?",
+    "What metrics define successful growth for your clients?",
+    "Do you offer consulting, tools, or both?",
+    "What specific information fields do you want to collect from clients?",
+    "Do you have a preferred website platform or technology stack?",
+    "What is your target client industry or segment?",
+    "What is your current client acquisition channel?",
+    "What specific web-based solutions do you provide?",
+    "What is your pricing model for consultation and solution services?",
+    "How do you currently acquire customers in the dental/pet shop/car care sectors?",
+    "Do you have existing case studies or success stories?",
+    "What is your typical implementation timeline for web-based solutions?",
+    "Do you offer ongoing support after initial implementation?",
+    "What technology stack do you use for your web-based solutions?"
+  ],
+  "interaction_summaries": [
+    "Customer described their market role as helping startup companies grow through business model and framework support. No specific pains mentioned yet. Opportunity to learn more about their service offerings and target customers.",
+    "Customer confirmed they are in startup phase and experiencing difficulty with client onboarding. They need a website to onboard clients that collects basic information, job/role in market, pains, and gains (client expectations). This reveals their primary pain point is client onboarding during the startup phase, and their immediate gain requirement is successful client onboarding with complete data collection.",
+    "Customer confirmed they have a working automated client onboarding system that captures customer job, pains, and gains. This addresses their pain point of hard time onboarding clients during startup phase. The automation will streamline the manual parts of client onboarding. Their immediate gain is successful client onboarding with complete data collection (job/role, pains, gains) and reduced manual effort.",
+    "Customer clarified their primary service offering: web-based solutions, consultation based on pain points, and pain killer suggestions. They serve physical businesses (dental clinics, pet shops, car care) but note industry is not a strict filter. This expands the market role from startup-focused to broader physical business services with B2B solution delivery. The customer's approach combines automated web solutions with human consultation elements."
+  ],
+  "source_documents": []
+}

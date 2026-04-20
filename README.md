@@ -9,3 +9,7 @@ Define database schemas and migrations directly in Python
 Flexible job queue system: in-memory for development, database or RabbitMQ for production
 Cron-style task scheduling for automated jobs
 Developer-friendly CLI commands for managing database and app state
+
+
+docker compose up -d --build
+docker compose up -d --scale generate-fe-consumer=2 generate-fe-consumer

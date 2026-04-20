@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import List
 
-from pydantic import Field, field_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 try:
@@ -22,7 +23,25 @@ def _env_file() -> str:
 
 
 def _split_csv(value: str) -> List[str]:
-    return [p.strip() for p in value.split(",") if p.strip()]
+    return [p.strip() for p in str(value or "").split(",") if p.strip()]
+
+
+def _parse_list(value: str, default: List[str]) -> List[str]:
+    s = str(value or "").strip()
+    if not s:
+        return default
+    if s == "*":
+        return ["*"]
+    if s.startswith("["):
+        try:
+            parsed = json.loads(s)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            out = [str(x).strip() for x in parsed if str(x).strip()]
+            return out or default
+    out = _split_csv(s)
+    return out or default
 
 
 class Settings(BaseSettings):
@@ -38,12 +57,12 @@ class Settings(BaseSettings):
     app_description: str = Field(default="Execute dynamic business commands via FastAPI.")
     app_version: str = Field(default="1.0.0")
 
-    cors_origins: List[str] = Field(default_factory=lambda: ["http://localhost:3000"])
+    cors_origins: str = Field(default="http://localhost:3000")
     cors_allow_credentials: bool = Field(default=True)
-    cors_allow_methods: List[str] = Field(default_factory=lambda: ["*"])
-    cors_allow_headers: List[str] = Field(default_factory=lambda: ["*"])
+    cors_allow_methods: str = Field(default="*")
+    cors_allow_headers: str = Field(default="*")
 
-    trusted_hosts: List[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1"])
+    trusted_hosts: str = Field(default="localhost,127.0.0.1,*.solitud.dev")
 
     gzip_minimum_size: int = Field(default=1000)
     static_enabled: bool = Field(default=True)
@@ -57,48 +76,46 @@ class Settings(BaseSettings):
     socket_room_join_token_secret: str = Field(default="")
     socket_server_stale_seconds: int = Field(default=60)
 
-    @field_validator("cors_origins", mode="before")
-    @classmethod
-    def _parse_cors_origins(cls, v):
-        if v is None:
-            return ["http://localhost:3000"]
-        if isinstance(v, list):
-            out = [str(x).strip() for x in v if str(x).strip()]
-            return out or ["http://localhost:3000"]
-        s = str(v).strip()
-        if not s:
-            return ["http://localhost:3000"]
-        if s == "*":
-            return ["*"]
-        return _split_csv(s)
+    kafka_enabled: bool = Field(default=True)
+    kafka_bootstrap_servers: str = Field(default="kafka:9092")
+    kafka_client_id: str = Field(default="solitud-api")
+    kafka_generate_fe_topic: str = Field(default="generate_fe")
+    kafka_generate_fe_group_id: str = Field(default="generate_fe_consumer")
+    kafka_auto_offset_reset: str = Field(default="earliest")
+    kafka_poll_timeout_seconds: float = Field(default=1.0)
+    kafka_retry_count: int = Field(default=3)
+    kafka_retry_delay_seconds: float = Field(default=2.0)
 
-    @field_validator("cors_allow_methods", "cors_allow_headers", "trusted_hosts", mode="before")
-    @classmethod
-    def _parse_csv_lists(cls, v):
-        if v is None:
-            return v
-        if isinstance(v, list):
-            return [str(x).strip() for x in v if str(x).strip()]
-        s = str(v).strip()
-        if not s:
-            return []
-        if s == "*":
-            return ["*"]
-        return _split_csv(s)
+    @property
+    def cors_origins_list(self) -> List[str]:
+        return _parse_list(self.cors_origins, ["http://localhost:3000"])
+
+    @property
+    def cors_allow_methods_list(self) -> List[str]:
+        return _parse_list(self.cors_allow_methods, ["*"])
+
+    @property
+    def cors_allow_headers_list(self) -> List[str]:
+        return _parse_list(self.cors_allow_headers, ["*"])
+
+    @property
+    def trusted_hosts_list(self) -> List[str]:
+        return _parse_list(self.trusted_hosts, ["localhost", "127.0.0.1", "*.solitud.dev"])
+
+    @property
+    def kafka_bootstrap_servers_list(self) -> List[str]:
+        return _parse_list(self.kafka_bootstrap_servers, ["kafka:9092"])
 
 
 settings = Settings()
 
 logger.info(
-    "settings loaded env_file=%s internal_auth_enabled=%s internal_id_set=%s internal_secret_set=%s jwt_secret_set=%s exp_seconds=%s join_secret_set=%s stale_seconds=%s",
+    "settings loaded env_file=%s cors_origins=%s trusted_hosts=%s kafka_bootstrap_servers=%s kafka_generate_fe_topic=%s",
     _env_file(),
-    settings.internal_auth_enabled,
-    bool(settings.internal_client_id),
-    bool(settings.internal_client_secret),
-    bool(settings.internal_auth_secret),
-    settings.internal_token_expire_seconds,
-    bool((settings.socket_room_join_token_secret or "").strip()),
-    settings.socket_server_stale_seconds,
+    settings.cors_origins_list,
+    settings.trusted_hosts_list,
+    settings.kafka_bootstrap_servers_list,
+    settings.kafka_generate_fe_topic,
 )
 
 __all__ = ["Settings", "settings"]

@@ -1,0 +1,156 @@
+{
+  "customer_id": "test10",
+  "created_at": "2026-03-27T12:33:54.558141+08:00",
+  "last_updated": "2026-03-27T12:39:20.034532+08:00",
+  "market_role": {
+    "title": "Accounting and back-office services provider",
+    "responsibilities": [
+      "Provide accounting",
+      "Handle payroll",
+      "Process business registration",
+      "Manage client inquiries",
+      "Handle bookings",
+      "Perform follow-ups"
+    ],
+    "decision_scope": "Supporting businesses by handling essential administrative and financial processes for startups and growing companies",
+    "systems_used": [],
+    "confidence": 0.9
+  },
+  "pains": [
+    {
+      "statement": "Website does not clearly explain services or value",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.9
+    },
+    {
+      "statement": "Receives low quality inquiries",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.9
+    },
+    {
+      "statement": "Online presence looks outdated",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.9
+    },
+    {
+      "statement": "Does not build enough trust",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.9
+    },
+    {
+      "statement": "Manual handling takes too much time",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.9
+    },
+    {
+      "statement": "No streamlined system for turning visitors into paying clients",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.9
+    }
+  ],
+  "gains": [
+    {
+      "statement": "Look more professional and credible",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.9
+    },
+    {
+      "statement": "Attract qualified leads",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.9
+    },
+    {
+      "statement": "Improve trust and brand image",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.9
+    },
+    {
+      "statement": "Create smoother customer journey from inquiry to conversion",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.9
+    },
+    {
+      "statement": "Increase inquiries",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.9
+    },
+    {
+      "statement": "Improve conversions",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.9
+    },
+    {
+      "statement": "Stand out in the market",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.9
+    }
+  ],
+  "observed_entities": [
+    {
+      "name": "Website",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.9
+    },
+    {
+      "name": "Contact forms",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.9
+    },
+    {
+      "name": "Booking tools",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.9
+    },
+    {
+      "name": "Lead capture tools",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.9
+    },
+    {
+      "name": "Client onboarding tools",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.9
+    }
+  ],
+  "open_questions": [
+    "What is your current website platform or technology stack?"
+  ],
+  "interaction_summaries": [
+    "ABC Growth Solutions is a back-office service provider seeking to upgrade their website and manual workflows to improve credibility, attract qualified leads, and increase conversions."
+  ],
+  "source_documents": [
+    {
+      "filename": "chat_message",
+      "source_type": "extracted",
+      "added_at": "2026-03-27T12:39:20.034470+08:00"
+    }
+  ]
+}

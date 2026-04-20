@@ -4,3 +4,6 @@ __pycache__
 *.tmp.*
 logs
 *.env*
+FE_Workbench
+uploads
+*tmp.*solitud-uploader-56440ffdd2fe.json

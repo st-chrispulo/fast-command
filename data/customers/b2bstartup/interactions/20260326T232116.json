@@ -1,0 +1,42 @@
+{
+  "type": "chat_message",
+  "input": "our role in the market is to ehlp start up company to grow with business model and framework",
+  "extracted": {
+    "market_role": {
+      "title": "Startup Growth Partner",
+      "responsibilities": [
+        "Help startup companies grow",
+        "Provide business model guidance",
+        "Offer framework support"
+      ],
+      "decision_scope": "Business model and framework development for startups",
+      "systems_used": [],
+      "confidence": 0.75
+    },
+    "pains": [
+      {
+        "statement": "unknown",
+        "severity": "unknown",
+        "frequency": "unknown",
+        "confidence": 0.0
+      }
+    ],
+    "gains": [
+      {
+        "statement": "Help startup companies grow with business model and framework",
+        "priority": "high",
+        "success_metric": "Startup growth achieved through business model and framework implementation",
+        "confidence": 0.85
+      }
+    ],
+    "observed_entities": [],
+    "open_questions": [
+      "What specific frameworks do you provide?",
+      "Which industries or startup stages do you focus on?",
+      "What metrics define successful growth for your clients?",
+      "Do you offer consulting, tools, or both?"
+    ],
+    "interaction_summary": "Customer described their market role as helping startup companies grow through business model and framework support. No specific pains mentioned yet. Opportunity to learn more about their service offerings and target customers."
+  },
+  "saved_at": "2026-03-26T23:21:16.135519+08:00"
+}

@@ -1,0 +1,46 @@
+{
+  "type": "chat_message",
+  "input": "ABC Growth Solutions is a small-to-medium business that provides accounting, payroll, and business registration services for startups and growing companies. Their goal is to help business owners simplify operations, stay compliant, and focus on growing their business. They position themselves as a reliable and approachable service partner for entrepreneurs who need back-office support. Their role in the market is to support businesses by handling essential administrative and financial processes that are necessary for smooth day-to-day operations. They act as a trusted service provider that helps clients save time, reduce errors, and stay organized. Instead of clients struggling with paperwork, compliance, and financial tracking, the company takes care of these functions efficiently.",
+  "extracted": {
+    "market_role_title": "Back-office service provider for startups",
+    "responsibilities": [
+      "Accounting",
+      "Payroll",
+      "Business registration",
+      "Administrative processes",
+      "Financial tracking"
+    ],
+    "decision_scope": "Handling essential administrative and financial processes for day-to-day operations",
+    "systems_used": [],
+    "pains": [
+      "Paperwork struggles",
+      "Compliance issues",
+      "Financial tracking difficulties"
+    ],
+    "gains": [
+      "Simplify operations",
+      "Stay compliant",
+      "Focus on growing business",
+      "Save time",
+      "Reduce errors",
+      "Stay organized"
+    ],
+    "observed_entities": [
+      "Accounting",
+      "Payroll",
+      "Business registration",
+      "Paperwork",
+      "Compliance",
+      "Financial tracking"
+    ],
+    "open_questions": [
+      "What is the biggest operational challenge you face internally right now?"
+    ],
+    "interaction_summary": "ABC Growth Solutions provides accounting, payroll, and registration services to startups to help them simplify operations and stay compliant.",
+    "source_document": "chat_message",
+    "confidence": 0.95,
+    "assistant_reply": "That sounds like a solid value proposition. What is the biggest operational challenge you face internally right now?",
+    "should_ask_followup": true
+  },
+  "saved_at": "2026-03-27T12:26:51.257381+08:00"
+}

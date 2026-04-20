@@ -1,0 +1,174 @@
+{
+  "customer_id": "89",
+  "created_at": "2026-03-27T13:04:34.793675+08:00",
+  "last_updated": "2026-03-27T13:08:15.128387+08:00",
+  "market_role": {
+    "title": "Back-office services provider for startups",
+    "responsibilities": [
+      "Accounting",
+      "Payroll",
+      "Business registration",
+      "Handling client inquiries",
+      "Bookings",
+      "Follow-ups"
+    ],
+    "decision_scope": "Providing administrative and financial support to clients; managing their own digital presence and lead generation",
+    "systems_used": [],
+    "confidence": 0.95
+  },
+  "pains": [
+    {
+      "statement": "Website does not clearly explain services",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Outdated online presence",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Low quality leads",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Manual handling of inquiries takes too much time",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "No streamlined system for conversion",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Potential customers don't understand value",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    }
+  ],
+  "gains": [
+    {
+      "statement": "Simplify operations for clients",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Stay compliant",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Look more professional and credible",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Attract qualified leads",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Improve trust and brand image",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Increase inquiries and conversions",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    }
+  ],
+  "observed_entities": [
+    {
+      "name": "Accounting services",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "Payroll services",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "Business registration",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "Website",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "Contact forms",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "Booking system",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "Lead capture tools",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "Client onboarding tools",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    }
+  ],
+  "open_questions": [
+    "What specific features or platforms are you currently using to manage leads?"
+  ],
+  "interaction_summaries": [
+    "ABC Growth Solutions wants a professional website overhaul to improve credibility, lead quality, and conversion rates for their back-office services."
+  ],
+  "source_documents": [
+    {
+      "filename": "chat_message",
+      "source_type": "extracted",
+      "added_at": "2026-03-27T13:08:15.128329+08:00"
+    }
+  ]
+}

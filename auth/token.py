@@ -6,8 +6,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SECRET_KEY = getenv("SECRET_KEY")
-ALGORITHM = "HS256"
+SECRET_KEY = getenv("JWT_SECRET_KEY")
+ALGORITHM = getenv("JWT_ALGORITHM")
 TOKEN_EXPIRE_MINUTES = 60
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 

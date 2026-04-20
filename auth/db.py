@@ -36,12 +36,15 @@ def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     return v or default
 
 
-def _build_database_url() -> str:
+def _build_database_url(external=False) -> str:
     user = _env("PG_DB_USER", "")
     password = _env("PG_DB_PASSWORD", "")
     host = _env("PG_DB_HOST", "localhost")
     port = _env("PG_DB_PORT", "5432")
     db = _env("PG_DB_NAME", "")
+    if external:
+        if host == 'postgres':
+            host = 'localhost'
     return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{db}"
 
 
@@ -56,3 +59,8 @@ DATABASE_URL = _build_database_url()
 
 engine = _create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+DATABASE_URL_EXT = _build_database_url(True)
+
+engine = _create_engine(DATABASE_URL_EXT)
+SessionLocalExternal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

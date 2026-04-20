@@ -1,0 +1,32 @@
+{
+  "type": "chat_message",
+  "input": "marketing agency focus on helping client to boost amazon sales, facilating their PPCs campaing etc",
+  "extracted": {
+    "market_role_title": "Amazon marketing agency",
+    "responsibilities": [
+      "Help clients boost Amazon sales",
+      "Facilitate PPC campaigns"
+    ],
+    "decision_scope": "Amazon advertising and e-commerce growth services for client businesses",
+    "systems_used": [],
+    "pains": [],
+    "gains": [
+      "Boosted Amazon sales",
+      "Improved PPC campaign performance"
+    ],
+    "observed_entities": [
+      "Amazon",
+      "PPC campaigns",
+      "Sales"
+    ],
+    "open_questions": [
+      "What other marketing services do you offer besides Amazon PPC?"
+    ],
+    "interaction_summary": "The user describes a marketing agency focused on helping clients grow Amazon sales through PPC campaigns.",
+    "source_document": "chat_message",
+    "confidence": 0.8,
+    "assistant_reply": "Got it. What other services or platforms do you work with besides Amazon PPC?",
+    "should_ask_followup": true
+  },
+  "saved_at": "2026-03-27T11:48:24.416179+08:00"
+}

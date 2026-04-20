@@ -1,0 +1,180 @@
+{
+  "customer_id": "tyt",
+  "created_at": "2026-03-30T20:45:36.176822+08:00",
+  "last_updated": "2026-03-30T20:49:41.168664+08:00",
+  "market_role": {
+    "title": "Accounting and back-office services provider",
+    "responsibilities": [
+      "Provide accounting services",
+      "Handle payroll processing",
+      "Manage business registration",
+      "Handle client inquiries",
+      "Manage bookings",
+      "Perform follow-ups"
+    ],
+    "decision_scope": "Administrative and financial processes for clients, plus lead generation and conversion operations",
+    "systems_used": [],
+    "confidence": 0.95
+  },
+  "pains": [
+    {
+      "statement": "Website does not clearly explain services or value",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Online presence looks outdated",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Many low quality inquiries",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Manual handling takes too much time",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Potential customers do not understand value proposition",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "No streamlined system for converting visitors",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    }
+  ],
+  "gains": [
+    {
+      "statement": "Simplify operations for clients",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Stay compliant",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Focus on growing business",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Look professional and credible",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Attract qualified leads",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Improve trust and brand image",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Increase inquiries and conversions",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    }
+  ],
+  "observed_entities": [
+    {
+      "name": "Accounting services",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "Payroll services",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "Business registration services",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "Current website",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "Contact forms",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "Booking tools",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "Lead capture tools",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "Client onboarding tools",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    }
+  ],
+  "open_questions": [
+    "What specific software or tools do you currently use for managing client inquiries and bookings?"
+  ],
+  "interaction_summaries": [
+    "ABC Growth Solutions provides accounting and back-office services but struggles with an outdated website, manual processes, and low-quality leads."
+  ],
+  "source_documents": [
+    {
+      "filename": "chat_message",
+      "source_type": "extracted",
+      "added_at": "2026-03-30T20:49:41.168604+08:00"
+    }
+  ]
+}

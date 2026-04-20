@@ -36,7 +36,7 @@ def _default_host() -> str:
 
 
 def _default_port() -> Optional[int]:
-    for k in ("SOCKET_SERVER_PORT", "PORT"):
+    for k in ("SOLITUD_SOCKET_SERVER_PORT", "PORT"):
         v = (os.getenv(k) or "").strip()
         if v:
             try:
@@ -120,7 +120,7 @@ async def register_server() -> Dict[str, Any]:
     for attempt in range(1, int(settings.startup_retries or 1) + 1):
         try:
             async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
-                headers = await auth_headers()
+                headers = await auth_headers(force_refresh=True)
                 res = await client.post(url, json=payload, headers=headers)
 
                 if res.status_code == 401:

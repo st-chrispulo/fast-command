@@ -1,0 +1,108 @@
+{
+  "type": "chat_message",
+  "input": "a working client onboarding; we capture list of the following: customer job, customer pains, customer gains; ultimately it will automate the manual part of onboarding clients and streamline the process",
+  "extracted": {
+    "market_role": {
+      "title": "Startup Growth Partner",
+      "responsibilities": [
+        "Help startup companies grow",
+        "Provide business model guidance",
+        "Offer framework support",
+        "Client onboarding"
+      ],
+      "decision_scope": "Business model and framework development for startups; B2B service delivery and client acquisition",
+      "systems_used": [
+        "Website (for client onboarding)",
+        "Automated client onboarding system"
+      ],
+      "confidence": 0.85
+    },
+    "pains": [
+      {
+        "statement": "Hard time onboarding clients during startup phase",
+        "severity": "high",
+        "frequency": "ongoing",
+        "confidence": 0.9
+      }
+    ],
+    "gains": [
+      {
+        "statement": "Help startup companies grow with business model and framework",
+        "priority": "high",
+        "success_metric": "Startup growth achieved through business model and framework implementation",
+        "confidence": 0.85
+      },
+      {
+        "statement": "Successful client onboarding with complete information collection",
+        "priority": "high",
+        "success_metric": "Clients completing onboarding with basic info, job/role, pains, and gains documented",
+        "confidence": 0.85
+      },
+      {
+        "statement": "Automate manual parts of client onboarding process",
+        "priority": "high",
+        "success_metric": "Streamlined client onboarding with reduced manual effort",
+        "confidence": 0.9
+      }
+    ],
+    "observed_entities": [
+      {
+        "name": "Client Onboarding Website",
+        "kind": "digital_platform",
+        "description": "Website used for onboarding clients during startup phase",
+        "attributes": [
+          {
+            "name": "basic_information",
+            "datatype": "object",
+            "required": true,
+            "description": "Client basic information fields",
+            "confidence": 0.85
+          },
+          {
+            "name": "job_role",
+            "datatype": "string",
+            "required": true,
+            "description": "Customer job or role in the market",
+            "confidence": 0.9
+          },
+          {
+            "name": "pains",
+            "datatype": "text",
+            "required": true,
+            "description": "Customer pain points and challenges",
+            "confidence": 0.85
+          },
+          {
+            "name": "gains",
+            "datatype": "text",
+            "required": true,
+            "description": "What customers expect from the startup service",
+            "confidence": 0.85
+          }
+        ],
+        "relationships": [
+          {
+            "type": "collects_from",
+            "target": "client"
+          },
+          {
+            "type": "supports",
+            "target": "market_role"
+          }
+        ],
+        "confidence": 0.85
+      }
+    ],
+    "open_questions": [
+      "What specific frameworks do you provide?",
+      "Which industries or startup stages do you focus on?",
+      "What metrics define successful growth for your clients?",
+      "Do you offer consulting, tools, or both?",
+      "Do you have a preferred website platform or technology stack?",
+      "What is your target client industry or segment?",
+      "What is your current client acquisition channel?"
+    ],
+    "interaction_summary": "Customer confirmed they have a working automated client onboarding system that captures customer job, pains, and gains. This addresses their pain point of hard time onboarding clients during startup phase. The automation will streamline the manual parts of client onboarding. Their immediate gain is successful client onboarding with complete data collection (job/role, pains, gains) and reduced manual effort."
+  },
+  "saved_at": "2026-03-26T23:31:09.041196+08:00"
+}

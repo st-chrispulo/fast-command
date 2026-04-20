@@ -1,0 +1,18 @@
+{
+  "customer_id": "b2bsolitud",
+  "created_at": "2026-03-26T23:46:35.487933+08:00",
+  "last_updated": "2026-03-26T23:46:35.487994+08:00",
+  "market_role": {
+    "title": "",
+    "responsibilities": [],
+    "decision_scope": "",
+    "systems_used": [],
+    "confidence": 0.0
+  },
+  "pains": [],
+  "gains": [],
+  "observed_entities": [],
+  "open_questions": [],
+  "interaction_summaries": [],
+  "source_documents": []
+}

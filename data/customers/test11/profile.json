@@ -1,0 +1,525 @@
+{
+  "customer_id": "test11",
+  "created_at": "2026-03-27T12:42:17.611463+08:00",
+  "last_updated": "2026-03-27T12:53:11.187812+08:00",
+  "market_role": {
+    "title": "Accounting and Business Registration Service Provider",
+    "responsibilities": [
+      "H",
+      "a",
+      "n",
+      "d",
+      "l",
+      "i",
+      "g",
+      "m",
+      "s",
+      "t",
+      "r",
+      "v",
+      "e",
+      "/",
+      "f",
+      "c",
+      "p",
+      "o",
+      ",",
+      "q",
+      "u",
+      "b",
+      "k",
+      "w",
+      "-"
+    ],
+    "decision_scope": "Business Owner/Founder",
+    "systems_used": [
+      "O",
+      "u",
+      "t",
+      "d",
+      "a",
+      "e",
+      "w",
+      "b",
+      "s",
+      "i",
+      ",",
+      "M",
+      "n",
+      "l",
+      "p",
+      "r",
+      "c"
+    ],
+    "confidence": 0.95
+  },
+  "pains": [
+    {
+      "statement": "O",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "u",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "t",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "d",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "a",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "e",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "w",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "b",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "s",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "i",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": ",",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "l",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "q",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "y",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "m",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "n",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "h",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "g",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "f",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "r",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "c",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "k",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "v",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "p",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    }
+  ],
+  "gains": [
+    {
+      "statement": "P",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "r",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "o",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "f",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "e",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "s",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "i",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "n",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "a",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "l",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "c",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "d",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "b",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "t",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "y",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": ",",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "q",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "u",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "m",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "h",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "j",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "v",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    }
+  ],
+  "observed_entities": [
+    {
+      "name": "A",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "B",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "C",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "G",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "r",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "o",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "w",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "t",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "h",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "S",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "l",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "u",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "i",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "n",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": ",",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "p",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "d",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "m",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "e",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    }
+  ],
+  "open_questions": [
+    "W",
+    "h",
+    "a",
+    "t",
+    "i",
+    "s",
+    "e",
+    "p",
+    "c",
+    "f",
+    "b",
+    "u",
+    "d",
+    "g",
+    "o",
+    "r",
+    "j",
+    "?",
+    "3",
+    "v",
+    "y",
+    "n",
+    "l"
+  ],
+  "interaction_summaries": [
+    "User provided a comprehensive brief about ABC Growth Solutions' current challenges with their website and lead generation, along with their goals for improvement."
+  ],
+  "source_documents": [
+    {
+      "filename": "chat_message",
+      "source_type": "extracted",
+      "added_at": "2026-03-27T12:53:11.187753+08:00"
+    }
+  ]
+}

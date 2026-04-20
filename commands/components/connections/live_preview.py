@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hmac
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse, urlunparse
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
@@ -23,6 +25,9 @@ except Exception:
     import logging
 
     logger = logging.getLogger(__name__)
+
+
+SOCKET_PUBLIC_BASE_URL = (os.getenv("SOLITUD_SOCKET_SERVER_HOST", "") or "").strip()
 
 
 class LivePreviewPayload(BaseModel):
@@ -46,6 +51,27 @@ class LivePreviewPayload(BaseModel):
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _strip_port_if_cloudflare(url: str) -> str:
+    s = (url or "").strip().rstrip("/")
+    if not s:
+        return s
+    try:
+        u = urlparse(s)
+        host = (u.hostname or "").lower()
+        port = u.port
+        if host and host not in ("127.0.0.1", "localhost") and port in (8001, 80, 443):
+            netloc = host
+            if u.username:
+                if u.password:
+                    netloc = f"{u.username}:{u.password}@{host}"
+                else:
+                    netloc = f"{u.username}@{host}"
+            return urlunparse((u.scheme, netloc, u.path, u.params, u.query, u.fragment)).rstrip("/")
+    except Exception:
+        return s
+    return s
 
 
 def _server_is_stale(server: SocketServer) -> bool:
@@ -101,12 +127,19 @@ def _join_token_hash(token: str) -> str:
 
 
 def _socket_base_url(server: SocketServer) -> str:
+    if SOCKET_PUBLIC_BASE_URL:
+        return _strip_port_if_cloudflare(SOCKET_PUBLIC_BASE_URL).rstrip("/")
+
     host = (getattr(server, "host", None) or "").strip()
     if not host:
         raise HTTPException(status_code=500, detail="Socket server host is missing")
+
     if host.startswith("http://") or host.startswith("https://"):
-        return host.rstrip("/")
-    return f"http://{host}".rstrip("/")
+        base = host.rstrip("/")
+    else:
+        base = f"http://{host}".rstrip("/")
+
+    return _strip_port_if_cloudflare(base).rstrip("/")
 
 
 def _extract_scope_value(room: SocketRoom, key: str) -> Optional[str]:
@@ -147,8 +180,6 @@ def _get_server_by_id(db, server_id: Any) -> Optional[SocketServer]:
 
 
 class LivePreviewCommand(BaseCommand):
-    """Creates or reuses a live preview room and returns connection details."""
-
     name = "components/connections/preview"
     schema = LivePreviewPayload
     require_auth = True

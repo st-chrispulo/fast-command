@@ -149,6 +149,7 @@ class GithubStartCommand(BaseCommand):
                     "scopes": scopes,
                     "allow_signup": allow_signup,
                     "use_pkce": bool(use_pkce),
+                    "code_verifier": code_verifier,
                 }
             )
         else:

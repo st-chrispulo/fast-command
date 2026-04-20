@@ -1,0 +1,101 @@
+{
+  "customer_id": "test4",
+  "created_at": "2026-03-27T11:47:08.088447+08:00",
+  "last_updated": "2026-03-27T11:57:02.458870+08:00",
+  "market_role": {
+    "title": "Amazon marketing agency",
+    "responsibilities": [
+      "Help clients boost Amazon sales",
+      "Facilitate PPC campaigns"
+    ],
+    "decision_scope": "Amazon advertising and e-commerce growth services for client businesses",
+    "systems_used": [],
+    "confidence": 0.85
+  },
+  "pains": [
+    {
+      "statement": "Managing large product catalogs (3k+ items)",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.85
+    },
+    {
+      "statement": "Difficulty tuning campaigns one by one for many products",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.85
+    }
+  ],
+  "gains": [
+    {
+      "statement": "Boosted Amazon sales",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.85
+    },
+    {
+      "statement": "Improved PPC campaign performance",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.85
+    }
+  ],
+  "observed_entities": [
+    {
+      "name": "Amazon",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.8
+    },
+    {
+      "name": "PPC campaigns",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.85
+    },
+    {
+      "name": "Sales",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.8
+    },
+    {
+      "name": "Product catalog",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.85
+    },
+    {
+      "name": "Amazon clients",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.85
+    }
+  ],
+  "open_questions": [
+    "What other marketing services do you offer besides Amazon PPC?",
+    "What tools or methods do you currently use to manage large catalogs?",
+    "How much time does tuning each product take?"
+  ],
+  "interaction_summaries": [
+    "The user describes a marketing agency focused on helping clients grow Amazon sales through PPC campaigns.",
+    "The agency shares a pain point about managing and tuning PPC campaigns for clients with large product catalogs (3k+ items)."
+  ],
+  "source_documents": [
+    {
+      "filename": "chat_message",
+      "source_type": "extracted",
+      "added_at": "2026-03-27T11:48:24.414399+08:00"
+    }
+  ]
+}

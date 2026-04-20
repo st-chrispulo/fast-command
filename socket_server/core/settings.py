@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -24,7 +24,13 @@ def _env_file() -> str:
 class Settings(BaseSettings):
     """Socket server settings loaded from .env."""
 
-    model_config = SettingsConfigDict(env_file=_env_file(), env_ignore_empty=True, extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=_env_file(),
+        env_ignore_empty=True,
+        extra="ignore",
+        env_prefix="SOLITUD_",
+        case_sensitive=False
+    )
 
     api_base_url: str = Field(default="http://localhost:8000")
     create_endpoint_path: str = Field(default="/api/v0/socket/servers/create")
@@ -35,7 +41,11 @@ class Settings(BaseSettings):
     internal_auth_token_path: str = Field(default="/api/v0/internal/auth/token")
     internal_client_id: str = Field(default="")
     internal_client_secret: str = Field(default="")
-    internal_scopes: List[str] = Field(default_factory=lambda: ["socket:servers:create", "socket:servers:heartbeat"])
+    internal_auth_secret: str = Field(default="")
+    internal_scopes: List[str] = Field(
+        default_factory=lambda: ["socket:servers:create", "socket:servers:heartbeat"],
+        validate_default=True
+    )
     internal_token_refresh_skew_seconds: int = Field(default=30)
 
     startup_retries: int = Field(default=30)
@@ -74,14 +84,28 @@ class Settings(BaseSettings):
     @field_validator("internal_scopes", mode="before")
     @classmethod
     def _parse_scopes(cls, v):
+        import json
+
         if v is None:
-            return []
+            return ["socket:servers:create", "socket:servers:heartbeat"]
+
         if isinstance(v, list):
-            return [str(x).strip() for x in v if str(x).strip()]
+            return v
+
         s = str(v).strip()
+
         if not s:
             return []
-        return [p.strip() for p in s.split(",") if p.strip()]
+
+        if s.startswith("["):
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, list):
+                    return parsed
+            except Exception:
+                pass
+
+        return [x.strip() for x in s.split(",") if x.strip()]
 
     @field_validator("socket_server_port", mode="before")
     @classmethod

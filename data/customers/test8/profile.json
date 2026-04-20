@@ -1,0 +1,139 @@
+{
+  "customer_id": "test8",
+  "created_at": "2026-03-27T12:27:13.958438+08:00",
+  "last_updated": "2026-03-27T12:31:01.366753+08:00",
+  "market_role": {
+    "title": "Back-office service provider for startups and growing companies",
+    "responsibilities": [
+      "Accounting",
+      "Payroll",
+      "Business registration",
+      "Handling administrative processes",
+      "Financial tracking"
+    ],
+    "decision_scope": "Supporting businesses with essential administrative and financial processes for day-to-day operations",
+    "systems_used": [],
+    "confidence": 0.95
+  },
+  "pains": [
+    {
+      "statement": "Paperwork struggles",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Compliance difficulties",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Financial tracking challenges",
+      "severity": "",
+      "frequency": "",
+      "confidence": 0.95
+    }
+  ],
+  "gains": [
+    {
+      "statement": "Simplify operations",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Stay compliant",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Focus on growth",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Save time",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Reduce errors",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    },
+    {
+      "statement": "Stay organized",
+      "priority": "",
+      "success_metric": "",
+      "confidence": 0.95
+    }
+  ],
+  "observed_entities": [
+    {
+      "name": "Accounting",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "Payroll",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "Business registration",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "Paperwork",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "Compliance",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    },
+    {
+      "name": "Financial tracking",
+      "kind": "",
+      "description": "",
+      "attributes": [],
+      "relationships": [],
+      "confidence": 0.95
+    }
+  ],
+  "open_questions": [
+    "What is the most common friction point you face when delivering these services?"
+  ],
+  "interaction_summaries": [
+    "ABC Growth Solutions describes itself as a back-office service provider handling accounting, payroll, and registration for startups."
+  ],
+  "source_documents": [
+    {
+      "filename": "chat_message",
+      "source_type": "extracted",
+      "added_at": "2026-03-27T12:31:01.366693+08:00"
+    }
+  ]
+}
