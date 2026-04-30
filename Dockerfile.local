@@ -1,0 +1,26 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV WATCHFILES_FORCE_POLLING=1
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends bash dos2unix \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir -U pip
+
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+COPY . /app
+
+ENV GCS_SA_JSON_PATH=/app/solitud-uploader-56440ffdd2fe.json
+
+RUN dos2unix /app/docker-entrypoint.sh /app/docker-entrypoint.local.sh /app/docker-run-with-env.sh \
+  && chmod +x /app/docker-entrypoint.sh /app/docker-entrypoint.local.sh /app/docker-run-with-env.sh
+
+EXPOSE 8000
+
+ENTRYPOINT ["/app/docker-entrypoint.local.sh"]

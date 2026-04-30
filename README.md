@@ -13,3 +13,8 @@ Developer-friendly CLI commands for managing database and app state
 
 docker compose up -d --build
 docker compose up -d --scale generate-fe-consumer=2 generate-fe-consumer
+
+Local Docker
+Copy .env.local.example to .env.local, then run:
+
+docker compose -f docker-compose.local.yml up -d --build

@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Dict, Optional
 
-from dotenv import dotenv_values
+from utils.env import merged_env_values
 
 try:
     from logger import logger as _app_logger
@@ -21,9 +21,12 @@ class EnvSetup:
         if not self.env_path.exists():
             raise FileNotFoundError(f"Env file not found at: {self.env_path}")
 
-        self.map: Dict[str, str] = {
-            k: str(v) for k, v in dotenv_values(self.env_path).items() if v is not None
-        }
+        self.env_paths = [self.env_path]
+        local_env_path = self.env_path.with_name(".env.local")
+        if local_env_path.exists():
+            self.env_paths.append(local_env_path)
+
+        self.map: Dict[str, str] = merged_env_values(self.env_paths)
 
     def get(self, key: str) -> str:
         """Returns the value for the given key or raises a ValueError."""

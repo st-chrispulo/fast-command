@@ -1,3 +1,10 @@
+"""partner/chat/get -- read the conversation row + history.
+
+Returns the full conversation envelope (part1 + part2 + part3 + part4 + part5 fields) and the
+chat trail. Optional ``part_no`` filter restricts the trail to a single
+sub-conversation.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -7,8 +14,14 @@ from pydantic import BaseModel, Field, field_validator
 
 from auth.db import SessionLocal
 from commands.base_command import BaseCommand
+from commands.partner._shared import (
+    as_int_user_id,
+    conversation_to_dict,
+    history_to_dict,
+)
 from models.partner.tbl_partner_conversation_histories import PartnerConversationHistory
 from models.partner.tbl_partner_conversations import PartnerConversation
+
 
 try:
     from logger import logger as _app_logger
@@ -20,87 +33,15 @@ except Exception:
     logger = logging.getLogger(__name__)
 
 
-def _as_int_user_id(v: Optional[str]) -> Optional[int]:
-    if not v:
-        return None
-    try:
-        iv = int(v)
-        return iv if iv > 0 else None
-    except Exception:
-        return None
-
-
-def _conversation_to_dict(m: PartnerConversation) -> dict:
-    return {
-        "id": str(m.id),
-        "created_by": getattr(m, "created_by", None),
-        "user_id": getattr(m, "user_id", None),
-        "conversation_key": getattr(m, "conversation_key", None),
-        "status": getattr(m, "status", None),
-        "partner_name": getattr(m, "partner_name", None),
-        "partner_industry": getattr(m, "partner_industry", None),
-        "partner_job_responsibilities": getattr(m, "partner_job_responsibilities", None) or [],
-        "partner_pains": getattr(m, "partner_pains", None) or [],
-        "partner_wishes": getattr(m, "partner_wishes", None) or [],
-        "partner_customer_segments": getattr(m, "partner_customer_segments", None) or [],
-        "partner_customer_relationships": getattr(m, "partner_customer_relationships", None) or [],
-        "partner_channels": getattr(m, "partner_channels", None) or [],
-        "partner_key_activities": getattr(m, "partner_key_activities", None) or [],
-        "partner_key_resources": getattr(m, "partner_key_resources", None) or [],
-        "partner_key_partners": getattr(m, "partner_key_partners", None) or [],
-        "partner_revenue_streams": getattr(m, "partner_revenue_streams", None) or [],
-        "conversation_summary": getattr(m, "conversation_summary", None),
-        "confidence": float(m.confidence) if getattr(m, "confidence", None) is not None else None,
-        "missing_fields": getattr(m, "missing_fields", None) or [],
-        "last_user_message": getattr(m, "last_user_message", None),
-        "last_assistant_message": getattr(m, "last_assistant_message", None),
-        "assistant_suggested_answers": getattr(m, "assistant_suggested_answers", None) or [],
-        "metadata": getattr(m, "metadata_json", None) or {},
-        "updated_by": getattr(m, "updated_by", None),
-        "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,
-        "updated_at": m.updated_at.isoformat() if getattr(m, "updated_at", None) else None,
-    }
-
-
-def _history_to_dict(m: PartnerConversationHistory) -> dict:
-    return {
-        "id": str(m.id),
-        "conversation_id": str(m.conversation_id),
-        "sequence_no": getattr(m, "sequence_no", None),
-        "created_by": getattr(m, "created_by", None),
-        "user_id": getattr(m, "user_id", None),
-        "user_message": getattr(m, "user_message", None),
-        "assistant_message": getattr(m, "assistant_message", None),
-        "assistant_suggested_answers": getattr(m, "assistant_suggested_answers", None) or [],
-        "partner_name": getattr(m, "partner_name", None),
-        "partner_industry": getattr(m, "partner_industry", None),
-        "partner_job_responsibilities": getattr(m, "partner_job_responsibilities", None) or [],
-        "partner_pains": getattr(m, "partner_pains", None) or [],
-        "partner_wishes": getattr(m, "partner_wishes", None) or [],
-        "partner_customer_segments": getattr(m, "partner_customer_segments", None) or [],
-        "partner_customer_relationships": getattr(m, "partner_customer_relationships", None) or [],
-        "partner_channels": getattr(m, "partner_channels", None) or [],
-        "partner_key_activities": getattr(m, "partner_key_activities", None) or [],
-        "partner_key_resources": getattr(m, "partner_key_resources", None) or [],
-        "partner_key_partners": getattr(m, "partner_key_partners", None) or [],
-        "partner_revenue_streams": getattr(m, "partner_revenue_streams", None) or [],
-        "conversation_summary": getattr(m, "conversation_summary", None),
-        "confidence": float(m.confidence) if getattr(m, "confidence", None) is not None else None,
-        "missing_fields": getattr(m, "missing_fields", None) or [],
-        "status": getattr(m, "status", None),
-        "reason": getattr(m, "reason", None),
-        "model_name": getattr(m, "model_name", None),
-        "prompt_version": getattr(m, "prompt_version", None),
-        "metadata": getattr(m, "metadata_json", None) or {},
-        "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,
-    }
-
-
 class GetPartnerChatPayload(BaseModel):
     conversation_key: str = Field(..., description="Conversation key")
     include_history: bool = Field(default=True, description="Whether to include chat trail")
     limit: Optional[int] = Field(default=None, description="Optional max number of history rows")
     order: str = Field(default="asc", description="History order: asc or desc")
+    part_no: Optional[int] = Field(
+        default=None,
+        description="Optional sub-conversation filter: 1=part1 (profile), 2=part2 (solution overview), 3=part3 (objectives), 4=part4 (scope & limitations), 5=part5 (actors & roles)",
+    )
 
     @field_validator("conversation_key")
     @classmethod
@@ -131,6 +72,15 @@ class GetPartnerChatPayload(BaseModel):
             raise ValueError("order must be either 'asc' or 'desc'")
         return s
 
+    @field_validator("part_no")
+    @classmethod
+    def validate_part_no(cls, v: Optional[int]) -> Optional[int]:
+        if v is None:
+            return None
+        if v < 1 or v > 9:
+            raise ValueError("part_no must be between 1 and 9")
+        return v
+
 
 class GetPartnerChatCommand(BaseCommand):
     name = "partner/chat/get"
@@ -144,13 +94,14 @@ class GetPartnerChatCommand(BaseCommand):
         if self.require_auth and not user_id:
             raise HTTPException(status_code=401, detail="Unauthorized (no user context).")
 
-        _ = _as_int_user_id(user_id)
+        _ = as_int_user_id(user_id)
         db = SessionLocal()
 
         try:
             logger.info(
-                "[partner.chat.get] conversation_key=%s requester_user_id=%s",
+                "[partner.chat.get] conversation_key=%s part_no=%s requester_user_id=%s",
                 payload.conversation_key,
+                payload.part_no,
                 user_id,
             )
 
@@ -170,6 +121,9 @@ class GetPartnerChatCommand(BaseCommand):
                     PartnerConversationHistory.conversation_id == conversation.id
                 )
 
+                if payload.part_no is not None:
+                    q = q.filter(PartnerConversationHistory.part_no == payload.part_no)
+
                 if payload.order == "desc":
                     q = q.order_by(PartnerConversationHistory.sequence_no.desc())
                 else:
@@ -179,12 +133,12 @@ class GetPartnerChatCommand(BaseCommand):
                     q = q.limit(payload.limit)
 
                 history_rows = q.all()
-                history_items = [_history_to_dict(row) for row in history_rows]
+                history_items = [history_to_dict(row) for row in history_rows]
 
             return {
                 "status": "ok",
                 "data": {
-                    "conversation": _conversation_to_dict(conversation),
+                    "conversation": conversation_to_dict(conversation),
                     "history": history_items,
                     "history_count": len(history_items),
                 },

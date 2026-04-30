@@ -29,3 +29,16 @@ aiohttp>=3.9
 psycopg2-binary
 confluent-kafka>=2.5
 
+# --- partner attachment pipeline ---
+# Used by commands/partner/attachments/upload.py + commands/partner/_attachment_extract.py.
+# All three are imported behind try/except so the upload still produces a
+# metadata-only summary if the lib is missing -- but installing them is
+# strongly recommended for real coverage.
+pdfplumber>=0.11
+python-docx>=1.1
+openpyxl>=3.1
+
+# Optional: enable LLM_PROVIDER=anthropic. Off by default so we don't pull
+# the dep into images that don't need it. Uncomment to switch on.
+# anthropic>=0.39
+

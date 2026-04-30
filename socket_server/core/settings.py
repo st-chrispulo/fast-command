@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from utils.env import bootstrap_environment
 
 try:
     from logger import logger as _app_logger
@@ -15,17 +15,13 @@ except Exception:
 
     logger = logging.getLogger(__name__)
 
-
-def _env_file() -> str:
-    root = Path(__file__).resolve().parents[2]
-    return str(root / ".env")
+ENV_FILES = bootstrap_environment()
 
 
 class Settings(BaseSettings):
-    """Socket server settings loaded from .env."""
+    """Socket server settings loaded from .env with optional .env.local overrides."""
 
     model_config = SettingsConfigDict(
-        env_file=_env_file(),
         env_ignore_empty=True,
         extra="ignore",
         env_prefix="SOLITUD_",
@@ -126,8 +122,8 @@ class Settings(BaseSettings):
 
 settings = Settings()
 logger.info(
-    "settings loaded env_file=%s api_base_url=%s internal_auth_enabled=%s token_path=%s client_id_set=%s client_secret_set=%s scopes=%s host=%s port=%s public_url=%s",
-    _env_file(),
+    "settings loaded env_files=%s api_base_url=%s internal_auth_enabled=%s token_path=%s client_id_set=%s client_secret_set=%s scopes=%s host=%s port=%s public_url=%s",
+    ",".join(ENV_FILES) or "<none>",
     settings.api_base_url,
     settings.internal_auth_enabled,
     settings.internal_auth_token_path,

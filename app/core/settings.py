@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import List
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from utils.env import bootstrap_environment
 
 try:
     from logger import logger as _app_logger
@@ -16,10 +16,7 @@ except Exception:
 
     logger = logging.getLogger(__name__)
 
-
-def _env_file() -> str:
-    root = Path(__file__).resolve().parents[2]
-    return str(root / ".env")
+ENV_FILES = bootstrap_environment()
 
 
 def _split_csv(value: str) -> List[str]:
@@ -48,7 +45,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="SOLITUD_",
         case_sensitive=False,
-        env_file=_env_file(),
         env_ignore_empty=True,
         extra="ignore",
     )
@@ -110,8 +106,8 @@ class Settings(BaseSettings):
 settings = Settings()
 
 logger.info(
-    "settings loaded env_file=%s cors_origins=%s trusted_hosts=%s kafka_bootstrap_servers=%s kafka_generate_fe_topic=%s",
-    _env_file(),
+    "settings loaded env_files=%s cors_origins=%s trusted_hosts=%s kafka_bootstrap_servers=%s kafka_generate_fe_topic=%s",
+    ",".join(ENV_FILES) or "<none>",
     settings.cors_origins_list,
     settings.trusted_hosts_list,
     settings.kafka_bootstrap_servers_list,

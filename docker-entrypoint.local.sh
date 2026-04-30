@@ -13,6 +13,7 @@ EOF
 }
 
 load_env_file "/app/.env"
+load_env_file "/app/.env.local"
 
 if [ "${RUN_MIGRATIONS:-1}" = "1" ]; then
   python -m database_setup --migrations-dir "/app/migrations"

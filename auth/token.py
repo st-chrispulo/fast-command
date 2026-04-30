@@ -2,13 +2,13 @@ import jwt
 from datetime import datetime, timedelta
 from fastapi import HTTPException
 from os import getenv
-from dotenv import load_dotenv
+from utils.env import bootstrap_environment
 
-load_dotenv()
+bootstrap_environment()
 
 SECRET_KEY = getenv("JWT_SECRET_KEY")
 ALGORITHM = getenv("JWT_ALGORITHM")
-TOKEN_EXPIRE_MINUTES = 60
+TOKEN_EXPIRE_MINUTES = 120
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 

@@ -62,8 +62,14 @@ from commands import (
     GoogleStartCommand,
     RegisterGoogleUserCommand,
     GoogleSignInCommand,
-    RunPartnerChatCommand,
-    GetPartnerChatCommand
+    RunPartnerProfileCommand,
+    RunPartnerSolutionOverviewCommand,
+    RunPartnerObjectivesCommand,
+    RunPartnerScopeCommand,
+    RunPartnerActorsCommand,
+    DispatchPartnerChatCommand,
+    GetPartnerChatCommand,
+    UploadPartnerAttachmentCommand,
 )
 
 command_registry = [
@@ -130,6 +136,12 @@ command_registry = [
     RegisterGoogleUserCommand(),
     GoogleStartCommand(),
     GoogleSignInCommand(),
-    RunPartnerChatCommand(),
-    GetPartnerChatCommand()
+    RunPartnerProfileCommand(),
+    RunPartnerSolutionOverviewCommand(),
+    RunPartnerObjectivesCommand(),
+    RunPartnerScopeCommand(),
+    RunPartnerActorsCommand(),
+    DispatchPartnerChatCommand(),
+    GetPartnerChatCommand(),
+    UploadPartnerAttachmentCommand(),
 ]

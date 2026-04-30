@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Optional
 
-from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import declarative_base, sessionmaker
+from utils.env import bootstrap_environment
 
 try:
     from logger import logger as _app_logger
@@ -18,14 +17,7 @@ except Exception:
 
     logger = logging.getLogger(__name__)
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-ENV_PATH = BASE_DIR / ".env"
-
 Base = declarative_base()
-
-
-def _load_env() -> None:
-    load_dotenv(dotenv_path=ENV_PATH, override=True)
 
 
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -52,7 +44,7 @@ def _create_engine(database_url: str) -> Engine:
     return create_engine(database_url, pool_pre_ping=True)
 
 
-_load_env()
+bootstrap_environment()
 
 APP_NAME = _env("APP_NAME")
 DATABASE_URL = _build_database_url()

@@ -72,6 +72,13 @@ from commands.google.start import GoogleStartCommand
 from commands.google.signin import GoogleSignInCommand
 from commands.google.register import RegisterGoogleUserCommand
 
-from commands.partner.chat import RunPartnerChatCommand
+from commands.partner.part1 import RunPartnerProfileCommand
+from commands.partner.part2 import RunPartnerSolutionOverviewCommand
+from commands.partner.part3 import RunPartnerObjectivesCommand
+from commands.partner.part4 import RunPartnerScopeCommand
+from commands.partner.part5 import RunPartnerActorsCommand
+from commands.partner.part6 import RunPartnerEntityModelCommand
+from commands.partner.dispatch import DispatchPartnerChatCommand
 from commands.partner.get_chat import GetPartnerChatCommand
+from commands.partner.attachments.upload import UploadPartnerAttachmentCommand
 
